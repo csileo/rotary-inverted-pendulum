@@ -42,7 +42,7 @@ above is the canonical layout; component-level photos are in
 
 ## Stepper driver — DRV8825
 
-- **Vref set to 0.485 V → ~0.9 A current limit** per phase (90 % of
+- **Vref set to 0.45 V → ~0.9 A current limit** per phase (90 % of
   the motor's 1 A rating). Standard 10 % margin keeps the driver and
   motor below thermal limits indefinitely.
 - 8.2–45 V supply range; 12 V chosen as the lowest sensible voltage —
@@ -65,7 +65,7 @@ differs:
 
 | Driver  | Imax → Vref                                                                                                           | Vref @ 0.9 A target                                   |
 | ------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| DRV8825 | `Vref = Imax / 2` (Rcs = 0.1 Ω, standard on Pololu and most clones)                                                   | **0.45 V** (we run 0.485 V — close enough)            |
+| DRV8825 | `Vref = Imax / 2` (Rcs = 0.1 Ω, standard on Pololu and most clones)                                                   | **0.45 V** (we run 0.45 V — close enough)            |
 | A4988   | `Vref = Imax × 8 × Rcs`. Pololu carriers use Rcs = 0.05 Ω; some clones use 0.1 Ω — check yours                        | **0.36 V** (Pololu) / **0.72 V** (Rcs = 0.1 Ω clones) |
 | TMC2209 | RMS-current calc is non-trivial — use the [TMC220X Vref calculator](https://printpractical.github.io/VrefCalculator/) | per calculator                                        |
 

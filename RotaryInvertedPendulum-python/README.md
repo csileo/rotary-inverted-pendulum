@@ -120,7 +120,7 @@ Stage breakdown (defined in `curriculum_train.sh`):
 | 3 (final)  | 0–10 ms | 4–7 steps | 100k |
 
 The final stage 3 delay range matches the hardware's measured 5-step
-transport delay at `MOTOR_ACCELERATION = 50k` and `Vref = 0.485 V`.
+transport delay at `MOTOR_ACCELERATION = 50k` and `Vref = 0.45 V`.
 Override per-stage parameters via env vars (`SEED`, `STEPS_PER_STAGE`,
 `DEVICE`).
 
