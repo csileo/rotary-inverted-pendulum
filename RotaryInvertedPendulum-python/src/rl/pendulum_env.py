@@ -35,6 +35,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
+from frame_stack import FrameStacker
 from pendulum_geometry import (
     PENDULUM_COM_M,
     PENDULUM_I_COM_SWING_KG_M2,
@@ -92,7 +93,7 @@ DR_PENDULUM_FRICTION_MULT_RANGE = (0.5, 2.0)
 # FastAccelStepper's moveByAcceleration() with the matching int32 steps/s².
 # Velocity is the integral of accel, capped at MAX_VELOCITY_RAD_S; position
 # is the integral of velocity, fed to the existing PD position actuator.
-MAX_VELOCITY_RAD_S = 5.0
+MAX_VELOCITY_RAD_S = 5.0  # reverted from 7.0 (conservateur)
 MAX_ACCEL_RAD_S2 = 150.0   # bumped from 100 after the first accel-mode
                             # deployment showed the policy saturating its
                             # accel command at ±99 repeatedly — needed more
@@ -312,7 +313,14 @@ class RotaryInvertedPendulumEnv(gym.Env):
         control_freq_hz: float = 35.0,  # canonical for this rig — see docs/control_rate_selection.md
         max_accel_rad_s2: float = MAX_ACCEL_RAD_S2,  # action × this = commanded angular accel
         max_velocity_rad_s: float = MAX_VELOCITY_RAD_S,  # velocity saturation cap
-        episode_length_s: float = 8.0,
+        episode_length_s: float = 12.0,
+        frame_stack: int = 1,  # number of stacked raw observation frames
+        # (oldest->newest). 1 = current unstacked behaviour, bit-for-bit
+        # compatible with pre-frame-stack checkpoints. >1 lets the policy
+        # reconstruct its own velocity/derivative estimate from position
+        # history instead of depending on the noisy/laggy firmware
+        # velocity estimate — see PLAN.md "Étape 15 — POMDP / frame
+        # stacking" and frame_stack.py.
         # Weights tuned for the standard quadratic-cost reward (see _reward).
         # At worst-case the per-step cost reaches ~22 (most of which is the
         # θ² term, max ~9.87 at hanging-down).
@@ -373,6 +381,7 @@ class RotaryInvertedPendulumEnv(gym.Env):
         dr_action_lag_tau_range_s: tuple[float, float] | None = None,
         dr_control_dt_jitter_frac: float | None = None,
         dr_theta_bias_max_rad: float | None = None,  # None → DR_THETA_BIAS_MAX_RAD
+        upright_init_frac: float = 0.0,  # fraction of episodes that start near upright
     ):
         super().__init__()
         self.params = PendulumParams.load(params_path)
@@ -380,6 +389,9 @@ class RotaryInvertedPendulumEnv(gym.Env):
         self.max_accel_rad_s2 = max_accel_rad_s2
         self.max_velocity_rad_s = max_velocity_rad_s
         self.episode_length_s = episode_length_s
+        self._frame_stack = int(frame_stack)
+        self._frame_stacker = FrameStacker(self._frame_stack, frame_dim=6)
+        self._last_stacked_obs: np.ndarray | None = None
         # All reward terms live in a single RewardWeights dataclass so the
         # sim env and the real env (real_env.py) share one source of truth.
         # Add new terms to reward.py, not here. None at call site → use
@@ -443,6 +455,7 @@ class RotaryInvertedPendulumEnv(gym.Env):
             else DR_THETA_BIAS_MAX_RAD
         )
         self._theta_bias_rad = 0.0  # sampled per-episode in reset()
+        self._upright_init_frac = float(upright_init_frac)
 
         xml = build_mjcf(self.params)
         self.model = mujoco.MjModel.from_xml_string(xml)
@@ -503,6 +516,7 @@ class RotaryInvertedPendulumEnv(gym.Env):
         obs_high = np.array(
             [MOTOR_LIMIT_RAD, 1.0, 1.0, 200.0, 200.0, 1.0], dtype=np.float32
         )
+        obs_high = np.tile(obs_high, self._frame_stack)
         self.observation_space = spaces.Box(low=-obs_high, high=obs_high, dtype=np.float32)
 
         self._viewer = None
@@ -553,10 +567,17 @@ class RotaryInvertedPendulumEnv(gym.Env):
         # time. Magnitude 0.7 × safe limit (≈ ±88°) keeps reset clear of
         # the immediate ±125° clamp while covering most of the working
         # range.
-        phi0 = self.np_random.uniform(-0.05, 0.05)
-        self.data.qpos[self._motor_qpos_addr] = self.np_random.uniform(
-            -0.7 * MOTOR_SAFE_LIMIT_RAD, 0.7 * MOTOR_SAFE_LIMIT_RAD
-        )
+        if self._upright_init_frac > 0.0 and self.np_random.uniform() < self._upright_init_frac:
+            # Curriculum: start near upright (phi ≈ π) with motor near center.
+            # Policy learns to balance from these easy starts, then transfers
+            # that knowledge to post-swing-up catch from hanging starts.
+            phi0 = math.pi + self.np_random.uniform(-0.3, 0.3)
+            self.data.qpos[self._motor_qpos_addr] = self.np_random.uniform(-0.3, 0.3)
+        else:
+            phi0 = self.np_random.uniform(-0.05, 0.05)
+            self.data.qpos[self._motor_qpos_addr] = self.np_random.uniform(
+                -0.7 * MOTOR_SAFE_LIMIT_RAD, 0.7 * MOTOR_SAFE_LIMIT_RAD
+            )
         self.data.qpos[self._pen_qpos_addr] = phi0
         self.data.qvel[self._motor_qvel_addr] = 0.0
         self.data.qvel[self._pen_qvel_addr] = 0.0
@@ -566,7 +587,8 @@ class RotaryInvertedPendulumEnv(gym.Env):
         self._prev_action = 0.0
         self._prev_motor_vel = 0.0
         mujoco.mj_forward(self.model, self.data)
-        return self._obs(), {}
+        self._last_stacked_obs = self._frame_stacker.reset(self._obs())
+        return self._last_stacked_obs, {}
 
     def _sample_dr_params(self) -> None:
         """Sample per-episode randomisation: physical params + lag/delay."""
@@ -715,7 +737,8 @@ class RotaryInvertedPendulumEnv(gym.Env):
             "action_delay_steps": self._action_delay_steps,
             "action_lag_tau_s": self._action_lag_tau_s,
         }
-        return self._obs(), reward, terminated, truncated, info
+        self._last_stacked_obs = self._frame_stacker.push(self._obs())
+        return self._last_stacked_obs, reward, terminated, truncated, info
 
     def render(self):
         if self.render_mode is None:

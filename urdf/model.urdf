@@ -41,6 +41,9 @@
          coin modelled; diametric magnet omitted, ~0.3 g near the pivot).
          Cross-checked against sysid free-swing period: m·g·d/ω² gives
          I_axis ≈ 4.48e-5 kg·m², matching m·d² + Lxx = 4.46e-5 within 1%.
+         Physical COM confirmed by balance-point measurement: ~51 mm from
+         pivot. Measured period: 10 half-swings in 2.45 s → T ≈ 490 ms
+         → ω_n ≈ 12.8 rad/s, consistent with model prediction of 500 ms.
          Inertia tensor is about the COM with axes aligned to the link
          frame; swing axis is x (matching the arm_to_pendulum joint).
          The 0.062 x-offset is the link-frame convention from the original

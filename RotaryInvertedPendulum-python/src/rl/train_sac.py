@@ -27,7 +27,7 @@ from stable_baselines3.common.callbacks import (
     EvalCallback,
 )
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from pendulum_env import RotaryInvertedPendulumEnv
 
@@ -47,11 +47,13 @@ def make_env(
     control_freq_hz: float = 35.0,
     max_accel_rad_s2: float = 150.0,
     max_velocity_rad_s: float | None = None,
+    frame_stack: int = 1,
     reward_action_rate_weight: float | None = None,
     reward_motor_vel_weight: float | None = None,
     reward_motor_jerk_weight: float | None = None,
     reward_stillness_bonus_weight: float | None = None,
     dr_theta_bias_max_rad: float | None = None,
+    **extra,
 ):
     def _thunk():
         env_kwargs = dict(
@@ -62,6 +64,7 @@ def make_env(
             dr_control_dt_jitter_frac=dr_control_dt_jitter_frac,
             control_freq_hz=control_freq_hz,
             max_accel_rad_s2=max_accel_rad_s2,
+            frame_stack=frame_stack,
             reward_action_rate_weight=reward_action_rate_weight,
             reward_motor_jerk_weight=reward_motor_jerk_weight,
             reward_stillness_bonus_weight=reward_stillness_bonus_weight,
@@ -73,6 +76,8 @@ def make_env(
             env_kwargs["reward_motor_vel_weight"] = reward_motor_vel_weight
         if max_velocity_rad_s is not None:
             env_kwargs["max_velocity_rad_s"] = max_velocity_rad_s
+        if extra.get("upright_init_frac"):
+            env_kwargs["upright_init_frac"] = extra["upright_init_frac"]
         env = RotaryInvertedPendulumEnv(**env_kwargs)
         # Always wrap in Monitor so SB3's evaluate_policy can read canonical
         # episode reward/length. monitor_dir=None means in-memory only
@@ -95,22 +100,49 @@ def train(args: argparse.Namespace) -> Path:
         (args.dr_action_lag_tau_min, args.dr_action_lag_tau_max)
         if args.dr_action_lag_tau_max is not None else None
     )
-    train_env = DummyVecEnv([make_env(
-        run_dir,
-        domain_randomization=args.domain_randomization,
-        dr_motor_accel_range_rad_s2=dr_accel,
-        dr_action_delay_steps_range=dr_delay,
-        dr_action_lag_tau_range_s=dr_action_lag,
-        dr_control_dt_jitter_frac=args.dr_dt_jitter_frac,
-        control_freq_hz=args.control_freq,
-        max_accel_rad_s2=args.max_accel_rad_s2,
-        reward_action_rate_weight=args.reward_action_rate_weight,
-        reward_motor_vel_weight=args.reward_motor_vel_weight,
-        reward_motor_jerk_weight=args.reward_motor_jerk_weight,
-        reward_stillness_bonus_weight=args.reward_stillness_bonus_weight,
-        max_velocity_rad_s=args.max_velocity_rad_s,
-        dr_theta_bias_max_rad=args.dr_theta_bias_max_rad,
-    )])
+    n_envs = args.n_envs
+    if n_envs > 1:
+        # SubprocVecEnv spawns N independent MuJoCo processes (true CPU
+        # parallelism). On Windows, spawn is the only available start method
+        # and is used automatically. Pass upright_init_frac and gradient_steps
+        # via CLI; make_env(None) skips the per-env run_dir log.
+        print(f"Using {n_envs} parallel environments (SubprocVecEnv)")
+        _env_kwargs = dict(
+            domain_randomization=args.domain_randomization,
+            dr_motor_accel_range_rad_s2=dr_accel,
+            dr_action_delay_steps_range=dr_delay,
+            dr_action_lag_tau_range_s=dr_action_lag,
+            dr_control_dt_jitter_frac=args.dr_dt_jitter_frac,
+            control_freq_hz=args.control_freq,
+            max_accel_rad_s2=args.max_accel_rad_s2,
+            frame_stack=args.frame_stack,
+            reward_action_rate_weight=args.reward_action_rate_weight,
+            reward_motor_vel_weight=args.reward_motor_vel_weight,
+            reward_motor_jerk_weight=args.reward_motor_jerk_weight,
+            reward_stillness_bonus_weight=args.reward_stillness_bonus_weight,
+            max_velocity_rad_s=args.max_velocity_rad_s,
+            dr_theta_bias_max_rad=args.dr_theta_bias_max_rad,
+            upright_init_frac=args.upright_init_frac,
+        )
+        train_env = SubprocVecEnv([make_env(None, **_env_kwargs) for _ in range(n_envs)])
+    else:
+        train_env = DummyVecEnv([make_env(
+            run_dir,
+            domain_randomization=args.domain_randomization,
+            dr_motor_accel_range_rad_s2=dr_accel,
+            dr_action_delay_steps_range=dr_delay,
+            dr_action_lag_tau_range_s=dr_action_lag,
+            dr_control_dt_jitter_frac=args.dr_dt_jitter_frac,
+            control_freq_hz=args.control_freq,
+            max_accel_rad_s2=args.max_accel_rad_s2,
+            frame_stack=args.frame_stack,
+            reward_action_rate_weight=args.reward_action_rate_weight,
+            reward_motor_vel_weight=args.reward_motor_vel_weight,
+            reward_motor_jerk_weight=args.reward_motor_jerk_weight,
+            reward_stillness_bonus_weight=args.reward_stillness_bonus_weight,
+            max_velocity_rad_s=args.max_velocity_rad_s,
+            dr_theta_bias_max_rad=args.dr_theta_bias_max_rad,
+        )])
     # Eval env is always deterministic — no DR (no action-lag, no obs
     # noise) AND no theta-bias (so best_model is selected on the
     # bias-free reference scenario, not on a particular bias sample).
@@ -118,6 +150,7 @@ def train(args: argparse.Namespace) -> Path:
         domain_randomization=False,
         control_freq_hz=args.control_freq,
         max_accel_rad_s2=args.max_accel_rad_s2,
+        frame_stack=args.frame_stack,
         reward_action_rate_weight=args.reward_action_rate_weight,
         reward_motor_vel_weight=args.reward_motor_vel_weight,
         reward_motor_jerk_weight=args.reward_motor_jerk_weight,
@@ -129,6 +162,9 @@ def train(args: argparse.Namespace) -> Path:
     if args.resume:
         print(f"Resuming from {args.resume}")
         model = SAC.load(args.resume, env=train_env, device=args.device)
+        model.tensorboard_log = str(run_dir / "tb")
+        if n_envs > 1:
+            model.gradient_steps = args.gradient_steps
     else:
         model = SAC(
             "MlpPolicy",
@@ -146,6 +182,15 @@ def train(args: argparse.Namespace) -> Path:
             seed=args.seed,
             device=args.device,
         )
+        if n_envs > 1:
+            model.gradient_steps = args.gradient_steps
+
+    if n_envs > 1:
+        # EvalCallback/CheckpointCallback count rollout calls, not total
+        # timesteps. With n_envs=16 each rollout collects 16 transitions,
+        # so divide by n_envs to keep the same interval in total timesteps.
+        args.eval_freq = max(1, args.eval_freq // n_envs)
+        args.checkpoint_freq = max(1, args.checkpoint_freq // n_envs)
 
     callbacks = CallbackList([
         EvalCallback(
@@ -195,6 +240,7 @@ def evaluate(args: argparse.Namespace) -> None:
         render_mode="human",
         control_freq_hz=args.control_freq,
         max_accel_rad_s2=args.max_accel_rad_s2,
+        frame_stack=args.frame_stack,
         reward_action_rate_weight=args.reward_action_rate_weight,
         reward_motor_jerk_weight=args.reward_motor_jerk_weight,
         reward_stillness_bonus_weight=args.reward_stillness_bonus_weight,
@@ -250,6 +296,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="auto",
                    help="torch device (cpu, cuda, mps, auto)")
+    p.add_argument("--n-envs", type=int, default=1,
+                   help="number of parallel simulation environments. "
+                        "Uses SubprocVecEnv (spawn) when > 1.")
+    p.add_argument("--gradient-steps", type=int, default=1,
+                   help="gradient steps per rollout. 1 = origin/main default (1:1 with "
+                        "n_envs=1). Use -1 with --n-envs > 1 to match collected "
+                        "transitions and keep the 1:1 ratio across all envs.")
     p.add_argument("--run-name", default=None,
                    help="run dir name under runs/. Default: timestamp.")
     p.add_argument("--resume", default=None, help="path to a .zip to resume from")
@@ -287,6 +340,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "envelope (~196 rad/s² at 50 kSteps/s²). Bumped from "
                         "100 after observing the policy saturating accel_cmd "
                         "in the first accel-mode deployment.")
+    p.add_argument("--frame-stack", type=int, default=3,
+                   help="number of stacked raw observation frames "
+                        "(oldest->newest) fed to the policy. 1 = current "
+                        "unstacked behaviour (back-compat with pre-frame-stack "
+                        "checkpoints). Lets the policy reconstruct its own "
+                        "velocity/derivative estimate from position history "
+                        "instead of depending on the noisy/laggy firmware "
+                        "velocity estimate — see PLAN.md 'Étape 15 — POMDP / "
+                        "frame stacking'. MUST match at fine-tune and deploy "
+                        "time (finetune_async.py / run_policy.py).")
     p.add_argument("--max-velocity-rad-s", type=float, default=None,
                    help="motor angular-velocity saturation cap (rad/s). "
                         "Default None → env default (5.0). Lower values "
@@ -342,6 +405,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "'active correction' attractor on this rig. "
                         "Default (None) uses DR_CONTROL_DT_JITTER_FRAC=0.05 "
                         "from pendulum_env. Set 0.0 to disable.")
+    p.add_argument("--upright-init-frac", type=float, default=0.0,
+                   help="fraction of training episodes that start near upright (phi≈π) "
+                        "with motor near center. Curriculum to help the policy learn "
+                        "balance before swing-up. 0.3 is a good starting value.")
     p.add_argument("--eval", default=None,
                    help="if set, skip training and render an eval rollout from this checkpoint")
     p.add_argument("--eval-seconds", type=float, default=30.0)

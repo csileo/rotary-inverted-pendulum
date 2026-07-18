@@ -44,6 +44,7 @@ from pathlib import Path
 import numpy as np
 from stable_baselines3 import SAC
 
+from frame_stack import FrameStacker
 from lowlevel_client import LowLevelClient
 
 
@@ -88,6 +89,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="action ∈ [-1, 1] maps to commanded angular accel "
                         "[-max, +max] rad/s². Must match the training-time "
                         "max_accel_rad_s2 (default 150 per current env).")
+    p.add_argument("--frame-stack", type=int, default=3,
+                   help="number of stacked raw observation frames "
+                        "(oldest->newest). MUST match the value the policy "
+                        "was trained/fine-tuned with — a mismatch either "
+                        "crashes on the obs-shape check or silently feeds "
+                        "the policy garbage. See PLAN.md 'Étape 15 — POMDP "
+                        "/ frame stacking' and frame_stack.py.")
     p.add_argument("--duration-s", type=float, default=30.0)
     p.add_argument("--device", default="cpu")
     p.add_argument("--dry-run", action="store_true",
@@ -136,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             # `SAC.load(...).observation_space` produces. Bounds match the
             # sim env (`pendulum_env.py`): obs are loose, actions clamped
             # to [-1, 1] by SAC's tanh squash.
+            #
+            # NOTE: distilling a frame-stacked teacher isn't implemented yet
+            # (out of scope — see PLAN.md); if/when it is, these bounds need
+            # `np.tile(..., frame_stack)` like the SAC teacher path below.
             observation_space = spaces.Box(
                 low=np.array(
                     [-MOTOR_SAFE_LIMIT_RAD, -1.0, -1.0, -200.0, -200.0, -1.0],
@@ -194,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             print("DRY RUN: motor stays disengaged.")
 
         prev_action = 0.0
+        stacker = FrameStacker(args.frame_stack, frame_dim=6)
+        first_tick = True
 
         loop_count = 0
         next_tick = time.monotonic()
@@ -227,7 +241,12 @@ def main(argv: list[str] | None = None) -> int:
                 motor_vel = -s.motor_vel_rad_s
                 pen_vel = -s.pendulum_vel_rad_s
 
-                obs = make_obs(motor_pos, phi, motor_vel, pen_vel, prev_action)
+                raw_obs = make_obs(motor_pos, phi, motor_vel, pen_vel, prev_action)
+                if first_tick:
+                    obs = stacker.reset(raw_obs)
+                    first_tick = False
+                else:
+                    obs = stacker.push(raw_obs)
                 action, _ = model.predict(obs, deterministic=not args.stochastic)
                 a = float(np.clip(action.flatten()[0], -1.0, 1.0))
 

@@ -37,11 +37,11 @@ void setup()
     Wire.setClock(I2C_CLOCK_HZ);
     as5600.begin();
 
-    while (!as5600.detectMagnet())
-    {
-        Serial.println("[AS5600] Waiting for magnet...");
-        delay(1000);
-    }
+    // while (!as5600.detectMagnet())
+    // {
+    //     Serial.println("[AS5600] Waiting for magnet...");
+    //     delay(1000);
+    // }
 
     // Print the current magnitude of the magnet
     Serial.print("[AS5600] Current magnitude: ");

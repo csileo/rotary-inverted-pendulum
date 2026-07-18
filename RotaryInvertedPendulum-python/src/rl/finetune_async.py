@@ -55,7 +55,6 @@ from async_control import (
     AsyncControlLoop,
     EpisodeStats,
     PolicySnapshot,
-    TimingViolation,
     TransitionQueue,
 )
 from real_env import RealRotaryInvertedPendulumEnv
@@ -126,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="action ∈ [-1, 1] maps to angular accel ∈ [-max, +max]"
                         " rad/s². Must match the value used at sim training time"
                         " (default 150 per current env).")
+    p.add_argument("--frame-stack", type=int, default=3,
+                   help="number of stacked raw observation frames "
+                        "(oldest->newest). Must match the sim training value "
+                        "the loaded --policy checkpoint was trained with — "
+                        "SAC.load(..., env=env) will raise on a shape mismatch. "
+                        "See PLAN.md 'Étape 15 — POMDP / frame stacking'.")
     p.add_argument("--gradient-steps", type=int, default=4,
                    help="SAC gradient updates per train() call. Higher "
                         "extracts more from each real transition")
@@ -160,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
                         "training value, otherwise fine-tune gradient pulls "
                         "the policy out of the stillness basin back toward "
                         "Kapitza on the rig.")
+    p.add_argument("--reward-motor-jerk-weight", type=float, default=None,
+                   help="Mirror of train_sac.py's flag — penalty on "
+                        "(motor_vel_t - motor_vel_{t-1})^2. Must match the "
+                        "sim training value to keep fine-tune gradient "
+                        "consistent with the sim reward basin.")
     p.add_argument("--dt-jitter-frac", type=float, default=0.05,
                    help="control-rate jitter (DR on dt). Each tick interval "
                         "is multiplied by uniform(1-frac, 1+frac). Mimics "
@@ -183,13 +193,16 @@ def main(argv: list[str] | None = None) -> int:
         max_accel_rad_s2=args.max_accel_rad_s2,
         episode_length_s=args.episode_length_s,
         reset_settle_s=args.reset_settle_s,
+        frame_stack=args.frame_stack,
     )
     if args.reward_action_rate_weight is not None:
         env_kwargs["reward_action_rate_weight"] = args.reward_action_rate_weight
     if args.reward_stillness_bonus_weight is not None:
         env_kwargs["reward_stillness_bonus_weight"] = args.reward_stillness_bonus_weight
+    if args.reward_motor_jerk_weight is not None:
+        env_kwargs["reward_motor_jerk_weight"] = args.reward_motor_jerk_weight
     env = RealRotaryInvertedPendulumEnv(**env_kwargs)
-    print(f"Control: {args.control_freq} Hz")
+    print(f"Control: {args.control_freq} Hz, frame_stack={args.frame_stack}")
 
     print(f"Loading policy from {args.policy}")
     model = SAC.load(args.policy, env=env, device=args.device)
@@ -308,31 +321,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             ctrl_thread.start()
 
-            n_train = 0
-            train_s = 0.0
             try:
+                # During episode: drain transitions only — no gradient updates.
+                # Training after the episode (motor disengaged) prevents GIL
+                # contention from blocking the 35 Hz control tick.
+                # 50ms poll interval: low-activity main thread so the control
+                # thread dominates the GIL throughout the episode.
                 while ctrl_thread.is_alive():
                     drained = queue.drain()
-                    added = _add_to_buffer(model, drained, replay_buffer_lock)
-
-                    can_train = (
-                        model.num_timesteps > args.learning_starts
-                        and model.replay_buffer.size() >= model.batch_size
-                    )
-                    if can_train:
-                        t0 = time.monotonic()
-                        with replay_buffer_lock:
-                            model.train(gradient_steps=args.gradient_steps,
-                                        batch_size=model.batch_size)
-                        train_s += time.monotonic() - t0
-                        n_train += 1
-                        # Refresh the snapshot so the control thread picks
-                        # up the new weights on the next predict() call.
-                        snapshot.refresh_from(model.actor)
-                    else:
-                        # Warmup: avoid busy-loop while we have nothing to train on.
-                        time.sleep(0.001)
-
+                    _add_to_buffer(model, drained, replay_buffer_lock)
+                    time.sleep(0.05)
 
                 # Drain any straggler transitions after episode end.
                 drained = queue.drain()
@@ -345,6 +343,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  WARNING: episode {ep_idx} produced no stats "
                       "(thread crashed before completion).", file=sys.stderr)
                 continue
+
+            # Train between episodes (motor disengaged — no GIL contention risk).
+            # gradient_steps updates per real step collected this episode,
+            # matching the SAC convention of equal env steps to gradient steps.
+            n_train = 0
+            train_s = 0.0
+            can_train = (
+                model.num_timesteps > args.learning_starts
+                and model.replay_buffer.size() >= model.batch_size
+                and ep_stats.n_steps > 0
+            )
+            if can_train:
+                n_train = ep_stats.n_steps * args.gradient_steps
+                t0 = time.monotonic()
+                model.train(gradient_steps=n_train, batch_size=model.batch_size)
+                train_s = time.monotonic() - t0
+                snapshot.refresh_from(model.actor)
 
             print(f"  steps={ep_stats.n_steps}  reward={ep_stats.cumulative_reward:+.1f}  "
                   f"mean_dt={ep_stats.mean_dt_ms:.2f}ms  "

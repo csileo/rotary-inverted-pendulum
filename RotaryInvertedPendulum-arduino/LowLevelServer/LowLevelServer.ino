@@ -1,8 +1,85 @@
 #include <FastAccelStepper.h>
 #include <AS5600.h>
 #include <Wire.h>
+#include <util/twi.h>
 
 #include "StepperUtils.h"
+
+// Direct polling TWI read for AS5600 RAW_ANGLE register.
+// Bypasses the Wire library's interrupt-driven state machine entirely,
+// which eliminates sensitivity to Timer1 ISR preemption. Retries up to
+// AS5600_MAX_RETRIES times (each retry adds ~100 µs for the NACK+delay).
+#define AS5600_I2C_ADDR  0x36
+#define AS5600_RAW_REG   0x0C
+#define AS5600_MAX_RETRIES 3
+
+static bool as5600_read_polling(long* out)
+{
+    // Suspend Wire ISR so it doesn't race with our direct register access.
+    uint8_t saved_twcr_twie = TWCR & _BV(TWIE);
+    TWCR &= ~_BV(TWIE);
+
+    bool ok = false;
+    for (uint8_t attempt = 0; attempt < AS5600_MAX_RETRIES && !ok; attempt++)
+    {
+        if (attempt > 0) delayMicroseconds(150);
+
+        uint16_t to;
+
+        // START
+        TWCR = _BV(TWINT) | _BV(TWSTA) | _BV(TWEN);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to || (TWSR & 0xF8) != TW_START) goto stop_retry;
+
+        // SLA+W
+        TWDR = AS5600_I2C_ADDR << 1;
+        TWCR = _BV(TWINT) | _BV(TWEN);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to || (TWSR & 0xF8) != TW_MT_SLA_ACK) goto stop_retry;
+
+        // Register address
+        TWDR = AS5600_RAW_REG;
+        TWCR = _BV(TWINT) | _BV(TWEN);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to || (TWSR & 0xF8) != TW_MT_DATA_ACK) goto stop_retry;
+
+        // Repeated START
+        TWCR = _BV(TWINT) | _BV(TWSTA) | _BV(TWEN);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to || (TWSR & 0xF8) != TW_REP_START) goto stop_retry;
+
+        // SLA+R
+        TWDR = (AS5600_I2C_ADDR << 1) | 1;
+        TWCR = _BV(TWINT) | _BV(TWEN);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to || (TWSR & 0xF8) != TW_MR_SLA_ACK) goto stop_retry;
+
+        // Read high byte (ACK)
+        TWCR = _BV(TWINT) | _BV(TWEN) | _BV(TWEA);
+        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+        if (!to) goto stop_retry;
+        {
+            uint8_t hi = TWDR;
+            // Read low byte (NACK — last byte)
+            TWCR = _BV(TWINT) | _BV(TWEN);
+            for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
+            if (!to) goto stop_retry;
+            uint8_t lo = TWDR;
+            *out = ((long)hi << 8 | lo) & 0x0FFF;
+            ok = true;
+        }
+
+        stop_retry:
+        // Always send STOP to release the bus before next attempt or exit.
+        TWCR = _BV(TWINT) | _BV(TWSTO) | _BV(TWEN);
+        // Wait for STOP to complete (TWSTO clears itself when done).
+        for (uint16_t w = 10000; w && (TWCR & _BV(TWSTO)); w--);
+    }
+
+    // Restore Wire ISR
+    if (saved_twcr_twie) TWCR |= _BV(TWIE);
+    return ok;
+}
 
 // Communication speed
 const long BAUD_RATE = 2000000;
@@ -14,6 +91,7 @@ const long BAUD_RATE = 2000000;
 #define CMD_ENGAGE_MOTOR 0x04
 #define CMD_DISENGAGE_MOTOR 0x05
 #define CMD_TARE_PENDULUM 0x06   // re-zero pen_position_rad to current AS5600 reading
+#define CMD_DEBUG_I2C     0x07   // diagnostic: raw I2C read, returns 4 bytes [rc, n, hi, lo]
 
 // Pin assignments. STEP must be on pin 9 (Timer1 OC1A on ATmega328) for
 // FastAccelStepper. DIR and ENABLE can be any digital pin.
@@ -24,7 +102,7 @@ const long BAUD_RATE = 2000000;
 // Accel-mode envelope. See pendulum_env.py for the corresponding sim
 // constants. The velocity cap below corresponds to MAX_VELOCITY_RAD_S
 // = 5 rad/s: 5 × (1600 steps/rev / 2π) ≈ 1273 steps/s ⇒ ~785 µs/step.
-const uint32_t MOTOR_MIN_STEP_US = 785;  // ≈ 5 rad/s
+const uint32_t MOTOR_MIN_STEP_US = 550;  // ≈ 7 rad/s (was 785 ≈ 5 rad/s)
 
 // Position safety limit (matches MOTOR_SAFE_LIMIT_RAD on the Python side,
 // ±125°). Past the rail the firmware actively brakes (commands a fixed
@@ -78,6 +156,29 @@ AS5600 as5600;
 // access — so `volatile` would only mislead future readers. Plain bool.
 bool motor_engaged = false;
 
+// Host-liveness watchdog. Without it, a killed/hung host process leaves
+// moveByAcceleration() applying the LAST commanded accel forever — the
+// motor winds up to the velocity cap and stalls against the mechanical
+// hard stop under full torque (incident 2026-07-05: fried the Nano's
+// CH340 and the host PC's USB-port ESD protection). The position-limit
+// brake in CMD_SET_ACCEL can't help: it only runs when a command
+// arrives.
+//
+// Armed by the first CMD_SET_ACCEL after an engage (so the idle gap
+// between CMD_ENGAGE_MOTOR and the control loop's first tick can't
+// false-trigger), refreshed by every received command, disarmed on
+// engage/disengage. When armed and no command has arrived for
+// WATCHDOG_TIMEOUT_US, loop() force-stops and disengages the motor —
+// same path as CMD_DISENGAGE_MOTOR. The host re-engages on the next
+// episode/run start, so recovery is automatic.
+//
+// 200 ms = 7-10 consecutive missed ticks at the 35-50 Hz control rates
+// this rig uses — far beyond any legitimate host pause during an active
+// episode, far shorter than a wind-up into the hard stop matters.
+const uint32_t WATCHDOG_TIMEOUT_US = 200000UL;
+static uint32_t last_cmd_us = 0;
+static bool watchdog_armed = false;
+
 // Function prototypes
 void handleCommand();
 void sendState();
@@ -87,9 +188,43 @@ void computeVelocities(float* motor_vel_rad_s, float* pen_vel_rad_s);
 void setup()
 {
     Serial.begin(BAUD_RATE);
+
+    // I²C bus recovery: always runs regardless of SDA state. After an
+    // Arduino reset mid-transaction the AS5600 may be holding SDA LOW
+    // (mid-byte) or HIGH (waiting for ACK) — both leave it unable to
+    // respond to a fresh Wire.begin(). Nine SCL pulses let the slave
+    // finish any in-progress byte. The STOP is generated cleanly by
+    // driving SDA LOW while SCL is still LOW (end of last pulse), then
+    // raising SCL HIGH, then raising SDA HIGH — avoiding the spurious
+    // START that occurs if SDA goes LOW while SCL is already HIGH.
+    {
+        const uint8_t SDA_PIN = A4, SCL_PIN = A5;
+        pinMode(SCL_PIN, OUTPUT);
+        pinMode(SDA_PIN, INPUT_PULLUP);
+        for (uint8_t i = 0; i < 9; i++) {
+            digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
+            digitalWrite(SCL_PIN, LOW);  delayMicroseconds(5);
+        }
+        // SCL is now LOW. Drive SDA LOW while SCL LOW (not a START).
+        // Then raise SCL HIGH, then SDA HIGH = clean STOP condition.
+        pinMode(SDA_PIN, OUTPUT);
+        digitalWrite(SDA_PIN, LOW);  delayMicroseconds(5);
+        digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
+        digitalWrite(SDA_PIN, HIGH); delayMicroseconds(5);
+        pinMode(SCL_PIN, INPUT);
+        pinMode(SDA_PIN, INPUT);
+        delay(10);
+    }
+
     Wire.begin();
-    Wire.setClock(400000);   // I²C fast mode for short transaction times.
+    Wire.setClock(100000);  // 100 kHz: 400 kHz bits (2.5 µs) get corrupted by
+                            // FastAccelStepper Timer1 ISR; 100 kHz (10 µs/bit)
+                            // is robust within the 2 ms sampleState() budget.
     as5600.begin();
+    // No startup gate on isConnected()/detectMagnet(): both rely on an I²C
+    // write-only probe that is unreliable on this module clone, while
+    // rawAngle() reads work correctly. The host validates state values before
+    // engaging the motor.
 
     engine.init();
     stepper = engine.stepperConnectToPin(STEP_PIN);
@@ -106,21 +241,10 @@ void setup()
     {
         while (true) {}
     }
-    // Shrink the forward-planning window from the library's 20 ms default
-    // to its documented minimum (8 ms = two cyclic-task periods). Default
-    // adds ~20 ms of lag between a new accel command and any change in
-    // emitted step intervals, because step pulses already queued can't be
-    // retroactively edited. Measured (accel_step_probe.py) total firmware
-    // lag at default: ~37 ms → expected ~15 ms after this change. At our
-    // top step rate (≈1270 steps/s) 8 ms still queues ~10 pulses, well
-    // above the "stepper starves and stalls at full speed" failure mode
-    // the library warns about.
     stepper->setForwardPlanningTimeInMs(8);
     stepper->disableOutputs();
 
     while (!Serial) { ; }
-    while (!as5600.detectMagnet()) { delay(500); }
-
     last_sample_us = micros();
 }
 
@@ -136,6 +260,23 @@ void loop()
     {
         handleCommand();
     }
+    // Host-liveness watchdog: if the host went quiet mid-episode, stop
+    // the motor instead of executing its last accel command forever.
+    // Timestamp taken fresh here (not the `now_us` from the top of loop())
+    // because handleCommand() above may have just refreshed last_cmd_us
+    // via its own micros() call — comparing against the stale, earlier
+    // now_us would make (now_us - last_cmd_us) underflow (unsigned) into
+    // a huge value on the very tick that arms the watchdog, instantly
+    // self-tripping before the motor ever gets to move.
+    uint32_t watchdog_check_us = micros();
+    if (motor_engaged && watchdog_armed &&
+        (uint32_t)(watchdog_check_us - last_cmd_us) > WATCHDOG_TIMEOUT_US)
+    {
+        motor_engaged = false;
+        watchdog_armed = false;
+        stepper->forceStop();
+        stepper->disableOutputs();
+    }
 }
 
 /*
@@ -145,32 +286,42 @@ void loop()
 void sampleState()
 {
     int32_t motor_step = stepper->getCurrentPosition();
-    long raw = as5600.rawAngle();
+    // Direct polling TWI read — immune to Timer1 ISR interference.
+    // Masks Timer1 interrupts for the ~500 µs read window to avoid any
+    // preemption of the busy-wait loops. The Wire ISR is also suspended
+    // inside as5600_read_polling() via TWCR.TWIE.
+    uint8_t saved_timsk1 = TIMSK1;
+    TIMSK1 = 0;
+    long raw = 0;
+    bool i2c_ok = as5600_read_polling(&raw);
+    TIMSK1 = saved_timsk1;
 
-    // Pendulum wraparound tracking (AS5600 is 12-bit; wrap threshold ±2048).
-    if (pen_raw_prev < 0)
+    // Pendulum wraparound tracking — only update on successful I²C reads.
+    // A failed read (i2c_ok=false) keeps pen_raw_prev unchanged so the next
+    // successful read computes a valid delta from the last known good position.
+    // Feeding raw=0 (failure sentinel) into the accumulator when pen_raw_prev
+    // is non-zero produces a spurious −14° step that corrupts every subsequent
+    // observation.
+    if (i2c_ok)
     {
-        pen_raw_prev = raw;
-    }
-    else
-    {
-        long delta = raw - pen_raw_prev;
-        if (delta >  2048) delta -= 4096;
-        if (delta < -2048) delta += 4096;
-        // Reject implausibly-large single-step deltas. One bad I²C read
-        // sample that we incorrectly classify as a wrap would add ±2π to
-        // pen_position_rad and contaminate every subsequent observation
-        // (the accumulator never resets). Skip the update on glitches —
-        // velocity for this tick will be slightly stale but stays sane.
-        if (delta > PEN_RAW_MAX_DELTA_LSB || delta < -PEN_RAW_MAX_DELTA_LSB)
+        if (pen_raw_prev < 0)
         {
-            // Don't update pen_raw_prev either: next good read will
-            // compute the delta against the last trustworthy reading.
+            pen_raw_prev = raw;
         }
         else
         {
-            pen_position_rad += (float)delta * ((2.0f * PI) / 4096.0f);
-            pen_raw_prev = raw;
+            long delta = raw - pen_raw_prev;
+            if (delta >  2048) delta -= 4096;
+            if (delta < -2048) delta += 4096;
+            if (delta > PEN_RAW_MAX_DELTA_LSB || delta < -PEN_RAW_MAX_DELTA_LSB)
+            {
+                pen_raw_prev = raw;
+            }
+            else
+            {
+                pen_position_rad += (float)delta * ((2.0f * PI) / 4096.0f);
+                pen_raw_prev = raw;
+            }
         }
     }
 
@@ -222,6 +373,9 @@ void handleCommand()
 {
     uint8_t command = Serial.read();
 
+    // Any received byte proves the host is alive — refresh the watchdog.
+    last_cmd_us = micros();
+
     switch (command)
     {
     case CMD_READY:
@@ -272,11 +426,16 @@ void handleCommand()
             // zero when the sign of accel opposes the current velocity — no
             // state machine needed on our side.
             stepper->moveByAcceleration(accel_steps_s2, true);
+
+            // First accel command of this engagement: the control loop is
+            // live, arm the watchdog.
+            watchdog_armed = true;
         }
         break;
 
     case CMD_ENGAGE_MOTOR:
         motor_engaged = true;
+        watchdog_armed = false;  // armed by the first CMD_SET_ACCEL
         stepper->enableOutputs();
         // Start in zero-accel state. moveByAcceleration(0, true) means
         // "hold current speed", and since we've just enabled the driver
@@ -291,6 +450,7 @@ void handleCommand()
 
     case CMD_DISENGAGE_MOTOR:
         motor_engaged = false;
+        watchdog_armed = false;
         // forceStop() drains the Timer1 step queue immediately; without this,
         // queued steps would continue advancing the firmware position counter
         // even though the driver's enable pin is HIGH.
@@ -323,6 +483,40 @@ void handleCommand()
         }
         interrupts();
         Serial.write(CMD_TARE_PENDULUM);  // ack
+        break;
+
+    case CMD_DEBUG_I2C:
+        {
+            // Repeated-START read with diagnostics. Short delay ensures
+            // ≥200 µs bus-free time after any preceding sampleState() STOP.
+            // Returns 4 bytes: [endTransmission_rc, requestFrom_n, raw_hi, raw_lo]
+            delayMicroseconds(200);
+            uint8_t et_rc, rf_n;
+            uint16_t raw16 = 0;
+            uint8_t saved = TIMSK1;
+            TIMSK1 &= ~(_BV(OCIE1A) | _BV(TOIE1));
+            Wire.beginTransmission(0x36);
+            Wire.write(0x0C);
+            et_rc = (uint8_t)Wire.endTransmission(false);
+            if (et_rc == 0)
+            {
+                rf_n = (uint8_t)Wire.requestFrom((uint8_t)0x36, (uint8_t)2);
+                if (rf_n == 2)
+                {
+                    raw16 = ((uint16_t)Wire.read() << 8) | Wire.read();
+                    raw16 &= 0x0FFF;
+                }
+            }
+            else
+            {
+                rf_n = 0;
+            }
+            TIMSK1 = saved;
+            Serial.write(et_rc);
+            Serial.write(rf_n);
+            Serial.write((uint8_t)(raw16 >> 8));
+            Serial.write((uint8_t)(raw16 & 0xFF));
+        }
         break;
 
     default:

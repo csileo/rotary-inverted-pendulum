@@ -45,6 +45,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from frame_stack import FrameStacker
 from lowlevel_client import LowLevelClient
 from reward import RewardWeights, compute_reward
 from pendulum_env import (
@@ -101,6 +102,8 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         # safer than capturing a moving pendulum as the new zero. 15 s
         # gives the operator generous time to settle the pendulum.
         reset_settle_s: float = 15.0,
+        frame_stack: int = 1,  # must match the sim training value — see
+        # pendulum_env.py's `frame_stack` param and frame_stack.py.
         terminate_on_hard_stop: bool = True,
         hard_stop_penalty: float = 5.0,
         # Reward weights (default = Quanser quadratic-cost form, same as
@@ -122,6 +125,7 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         reward_stillness_bonus_weight: float | None = None,
         reward_stillness_sigma_theta_rad: float = 0.3,
         reward_stillness_sigma_motor_vel_rad_s: float = 1.0,
+        reward_motor_jerk_weight: float | None = None,
         params_path: str | Path | None = None,
     ):
         super().__init__()
@@ -146,6 +150,10 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
                 float(reward_action_rate_weight)
                 if reward_action_rate_weight is not None else 0.0
             ),
+            k_motor_jerk=(
+                float(reward_motor_jerk_weight)
+                if reward_motor_jerk_weight is not None else 0.0
+            ),
             k_stillness_bonus=(
                 float(reward_stillness_bonus_weight)
                 if reward_stillness_bonus_weight is not None else 0.0
@@ -153,10 +161,6 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
             sigma_theta=float(reward_stillness_sigma_theta_rad),
             sigma_motor_vel=float(reward_stillness_sigma_motor_vel_rad_s),
         )
-        # Motor-jerk term needs prev_motor_vel tracking. real_env doesn't
-        # currently expose a CLI flag for it (sim-only feature), but the
-        # compute_reward signature takes it — initialise to 0 and never update,
-        # which makes k_motor_jerk=0 the only sensible weight for real env.
         self._prev_motor_vel = 0.0
 
         self._dt = 1.0 / control_freq_hz
@@ -177,6 +181,9 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         self._motor_vel = 0.0
         self._pen_vel = 0.0
         self._next_tick = 0.0
+        self._frame_stack = int(frame_stack)
+        self._frame_stacker = FrameStacker(self._frame_stack, frame_dim=6)
+        self._last_stacked_obs: np.ndarray | None = None
 
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(1,), dtype=np.float32
@@ -186,6 +193,7 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         obs_high = np.array(
             [MOTOR_LIMIT_RAD, 1.0, 1.0, 200.0, 200.0, 1.0], dtype=np.float32
         )
+        obs_high = np.tile(obs_high, self._frame_stack)
         self.observation_space = spaces.Box(
             low=-obs_high, high=obs_high, dtype=np.float32
         )
@@ -261,6 +269,34 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         )
         return False
 
+    def _home_motor(self, client: LowLevelClient, center_threshold_rad: float = 0.3) -> None:
+        """Drive the motor back toward zero if it drifted far out during the last episode.
+
+        Re-engages briefly, applies a PD acceleration toward center at 20 Hz, then
+        disengages. The pendulum will swing from the motion; the caller's subsequent
+        _wait_for_pendulum_rest() will absorb that disturbance.
+        """
+        _, motor_pos, _, _, _ = self._read_raw_state()
+        if abs(motor_pos) <= center_threshold_rad:
+            return
+        print(f"  [home] motor at {math.degrees(motor_pos):.1f}° — driving to center")
+        client.engage_motor()
+        self._motor_engaged = True
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 5.0:
+            _, motor_pos, _, motor_vel, _ = self._read_raw_state()
+            if abs(motor_pos) <= center_threshold_rad:
+                break
+            kp, kd = 3.0, 1.0
+            accel = float(np.clip(-(kp * motor_pos + kd * motor_vel), -20.0, 20.0))
+            client.set_acceleration(accel)
+            time.sleep(0.05)
+        client.set_acceleration(0.0)
+        time.sleep(0.15)
+        client.disengage_motor()
+        self._motor_engaged = False
+        print(f"  [home] done — motor now at {math.degrees(motor_pos):.1f}°")
+
     def _build_obs(self, motor_pos: float, phi: float) -> np.ndarray:
         theta = _wrap_pi(phi - math.pi)
         return np.array(
@@ -306,6 +342,7 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         # encoder zero, polluting the bias signal we rely on.
         client.disengage_motor()
         self._motor_engaged = False
+        self._home_motor(client)  # return arm to center if far out; disturbs pendulum first
         rested = self._wait_for_pendulum_rest(client)
 
         # Re-tare the pendulum encoder — but ONLY if the pendulum is
@@ -345,7 +382,8 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         self._step_count = 0
         self._next_tick = time.monotonic()
 
-        return self._build_obs(motor_pos, phi), {}
+        self._last_stacked_obs = self._frame_stacker.reset(self._build_obs(motor_pos, phi))
+        return self._last_stacked_obs, {}
 
     def apply_action(self, action) -> float:
         """Send `action` to the motor as an angular acceleration command.
@@ -388,8 +426,9 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
         try:
             t_us, motor_pos, phi, motor_vel, pen_vel = self._read_raw_state()
         except OSError:
-            return self._build_obs(self._motor_pos_prev, self._phi_prev), 0.0, True, False, {}
+            return self._last_stacked_obs, 0.0, True, False, {}
 
+        self._prev_motor_vel = self._motor_vel
         self._motor_vel = motor_vel
         self._pen_vel = pen_vel
 
@@ -411,7 +450,8 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
 
         self._motor_pos_prev = motor_pos
         self._phi_prev = phi
-        return self._build_obs(motor_pos, phi), reward, terminated, truncated, info
+        self._last_stacked_obs = self._frame_stacker.push(self._build_obs(motor_pos, phi))
+        return self._last_stacked_obs, reward, terminated, truncated, info
 
     def step(self, action):
         """Synchronous step: apply action, sleep to maintain the configured
@@ -426,7 +466,7 @@ class RealRotaryInvertedPendulumEnv(gym.Env):
             a = self.apply_action(action)
         except OSError:
             # Serial syscall interrupted during set_acceleration — treat as termination.
-            return self._build_obs(self._motor_pos_prev, self._phi_prev), 0.0, True, False, {}
+            return self._last_stacked_obs, 0.0, True, False, {}
 
         # Pace to the requested control rate. Note: this is the bug-prone
         # part — if the SAC training loop runs gradient updates between

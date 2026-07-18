@@ -235,10 +235,12 @@ class AsyncControlLoop:
         disengaging the motor.
         """
         env = self.env
-        # The orchestrator already called env.reset(); we read the current
-        # state to bootstrap the obs without consuming an episode step.
+        # The orchestrator already called env.reset(); read the stacked obs
+        # it already computed to bootstrap without consuming an episode step
+        # or re-pushing a frame into the stacker (which would desync it from
+        # what physically happened).
         try:
-            obs = env._build_obs(env._motor_pos_prev, env._phi_prev)
+            obs = env._last_stacked_obs
         except Exception as e:
             self.last_error = e
             raise
