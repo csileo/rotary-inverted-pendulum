@@ -30,7 +30,7 @@ A DIY rotary inverted pendulum you can print, solder, and train at home — for 
 | `2-full-no-models` | Everything except `models/` and `logs/`                                                                                                                                     |
 | `3-rl-ready`       | Just the RL pipeline ([`RotaryInvertedPendulum-python/src/rl/`](RotaryInvertedPendulum-python/src/rl)) — run the training scripts as-is                                          |
 | `4-diy-rl`         | Just the physical parameters ([`sysid_params.json`](RotaryInvertedPendulum-python/src/rl/sysid_params.json), [`docs/rig_geometry_parameters.md`](docs/rig_geometry_parameters.md)) — write your own sim and training from scratch |
-| `5-demo`           | Just enough to run the best checkpoint on the rig                                                                                                                                |
+| `demo`             | Just enough to run the best checkpoint on the rig                                                                                                                                |
 
 ## Prefer to buy rather than build?
 
