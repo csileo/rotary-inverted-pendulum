@@ -64,6 +64,10 @@ ALWAYS_FILES = ["LICENSE"]
 LEVEL2_EXCLUDE_PREFIXES = [
     f"{RL_DIR}/models/",
     f"{RL_DIR}/logs/",
+    # demo-only sources, remapped for level 5 (see REMAP below) - the raw
+    # ".5-demo" files must not leak into other levels unremapped.
+    "README.5-demo.md",
+    "requirements.5-demo.txt",
 ]
 
 LEVEL3_EXCLUDE = [
@@ -79,6 +83,7 @@ LEVEL3_EXTRA_FILES = [
     "docs/control_rate_selection.md",
     "docs/transport_delay.md",
     "urdf/model.urdf",
+    "requirements.txt",
 ]
 
 LEVEL4_FILES = [
