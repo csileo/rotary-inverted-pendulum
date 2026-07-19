@@ -1,5 +1,5 @@
 """Regenerate this repo's difficulty-level branches (2-full-no-models,
-3-rl-ready, 4-diy-rl, 5-demo) from `main`, without ever touching `main` or
+3-rl-ready, 4-diy-rl, demo) from `main`, without ever touching `main` or
 the working tree.
 
 Commits only ever land on `main` (level 1: everything, including models).
@@ -36,7 +36,7 @@ what levels 3/4 are meant to teach), see also README.md's "Branches" table:
   at runtime by pendulum_geometry.py, even though the meshes are not).
 - 4-diy-rl: sysid_params.json + sysid_runbook.md + rig_geometry_parameters.md
   only - no RL/sim code, no URDF, so the colleague has to write their own.
-- 5-demo: just enough to run inference against the real rig with the
+- demo: just enough to run inference against the real rig with the
   three reference models (working balance, partial balance, fails to
   swing up - run_policy.py's actual runtime deps only - NOT
   async_control.py/real_env.py, which are finetune_async.py-only), the
@@ -153,7 +153,7 @@ LEVELS = {
     2: ("2-full-no-models", _level2_keep, None, None),
     3: ("3-rl-ready", _level3_keep, None, LEVEL3_EXTRA_FILES),
     4: ("4-diy-rl", *_allowlist(LEVEL4_FILES)),
-    5: ("5-demo", *_allowlist_from_pairs(LEVEL5_FILES)),
+    5: ("demo", *_allowlist_from_pairs(LEVEL5_FILES)),
 }
 
 
