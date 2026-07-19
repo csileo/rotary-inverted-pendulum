@@ -14,7 +14,7 @@ case in models/README.md, where the only available buffer was stale) beyond
 a loose mtime comparison — read the printed warning and check the source run
 directory yourself if it fires.
 
-Requires stable_baselines3 (see RotaryInvertedPendulum-python/src/rl/requirements.txt).
+Requires stable_baselines3 (see requirements.txt at the repo root).
 
 Usage:
     python tools/checkpoints/save_model_bundle.py \\

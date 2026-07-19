@@ -2,7 +2,7 @@
 `--frame-stack` value that reproduces it against `frame_stack.py`'s
 `frame_dim=6` (pendulum raw observation), without needing an env/hardware.
 
-Requires stable_baselines3 (see RotaryInvertedPendulum-python/src/rl/requirements.txt).
+Requires stable_baselines3 (see requirements.txt at the repo root).
 
 Usage:
     python tools/checkpoints/inspect_sb3_obs_space.py <checkpoint.zip> [...]

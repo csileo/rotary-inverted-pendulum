@@ -1,7 +1,0 @@
-# Minimal deps for run_policy.py (inference only - no training, no simulation).
-# stable-baselines3 pulls in torch automatically; on a machine without a
-# GPU, install the CPU-only wheel first to skip the multi-GB CUDA download:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-numpy
-stable-baselines3
-pyserial
