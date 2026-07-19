@@ -1,6 +1,6 @@
 # Rotary Inverted Pendulum — Demo
 
-The minimal slice of this project: flash the firmware, install a small Python env, and run one of three reference policies on the physical rig. No training, no simulation.
+The minimal slice of this project: flash the firmware, install a small Python env, and run one of three reference policies on the physical rig — plus enough of the simulator to preview them without hardware. No training.
 
 ## 1. Flash the Arduino Nano
 
@@ -32,3 +32,13 @@ Three reference checkpoints ship in `models/`, each trained with a different num
 `--frame-stack 3` is `run_policy.py`'s default, so it can be omitted for `policy_working_balance.zip` — it's spelled out above for clarity. Ctrl-C disengages the motor cleanly in all cases.
 
 If a checkpoint doesn't balance well on your rig, the full repo (`main` branch) ships a matching replay buffer for `policy_working_balance.zip` plus `finetune_async.py`, so you can pick up fine-tuning where it left off instead of starting from scratch.
+
+## 4. Preview a policy in simulation (no rig needed)
+
+No hardware, no port — this runs the checkpoint against the MuJoCo simulator instead, in a viewer window:
+
+```bash
+python train_sac.py --eval models/policy_working_balance.zip --frame-stack 3 --eval-seconds 30
+```
+
+Same `--frame-stack` caveat as above. This opens a graphical viewer, so it needs a display (no headless/SSH-only boxes).
