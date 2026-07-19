@@ -1,0 +1,179 @@
+#include <AccelStepper.h>
+#include <AS5600.h>
+#include <Wire.h>
+
+// Define the stepper motor connections
+#define dirPin 2  // Direction
+#define stepPin 9 // Step (Timer1 OC1A — rig wired here so FastAccelStepper-based sketches work too)
+
+// Create an instance of the AccelStepper class
+AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin, 0, 0, false);
+
+// Create an instance of the AS5600 class
+AS5600 as5600;
+long as5600_initial_position = 0;
+
+bool motor_running = false;
+long motor_target_pos = 0;
+
+// Define the commands
+#define CHECK_READY "1"
+#define GET_POSITION "2"
+#define GET_POSITION_PENDULUM "3"
+#define SET_TARGET "4"
+#define START_MOTOR "5"
+#define STOP_MOTOR "6"
+
+void setup()
+{
+    Serial.begin(2000000); // Start the serial communication
+    Wire.begin();         // Start the I2C communication
+    as5600.begin();
+
+    // Set the maximum speed and acceleration
+    stepper.setMaxSpeed(200000);
+    stepper.setAcceleration(100000);
+
+    // Set the enable pin for the stepper motor driver and
+    // invert it because we are using a DRV8825 board with an
+    // active-low enable signal (LOW = enabled, HIGH = disabled)
+    stepper.setEnablePin(5);
+    stepper.setPinsInverted(false, false, true);
+
+    while (!as5600.detectMagnet())
+    {
+        Serial.println("[AS5600] Waiting for magnet...");
+        delay(1000); // Wait for the magnet to be detected
+    }
+
+    // Print the current magnitude of the magnet
+    Serial.print("[AS5600] Current magnitude: ");
+    Serial.println(as5600.readMagnitude());
+
+    // Print the magnet strength
+    if (as5600.magnetTooWeak())
+    {
+        Serial.println("[AS5600] Magnet strength is too weak. ---");
+    }
+    else if (as5600.magnetTooStrong())
+    {
+        Serial.println("[AS5600] Magnet strength is too strong. +++");
+    }
+    else
+    {
+        Serial.println("[AS5600] Magnet strength is just right!");
+    }
+
+    as5600_initial_position = as5600.rawAngle();
+    Serial.print("[AS5600] as5600_initial_position: ");
+    Serial.println(as5600_initial_position);
+}
+
+void loop()
+{
+    while (Serial.available() > 0)
+    {
+        char receivedChar = Serial.read();
+        if (receivedChar == '\n')
+        {
+            handleCommand();
+        }
+        else
+        {
+            // Append characters to the received message
+            parseReceivedMessage(receivedChar);
+        }
+    }
+
+    if (motor_running)
+    {
+        // Move the motor to the target position
+        stepper.moveTo(motor_target_pos);
+
+        // Run the stepper motor
+        stepper.run();
+    }
+}
+
+/*
+ * Convert the raw angle from the AS5600 magnetic encoder to degrees.
+ */
+float convertRawAngleToDegrees()
+{
+    // Get the current position of the AS5600
+    short as5600_current_position = as5600.rawAngle();
+
+    // Calculate the difference between the current position and the initial position
+    short difference = as5600_current_position - as5600_initial_position;
+
+    if (difference < 0)
+    {
+        difference += 4096;
+    }
+
+    // Map the 0–4095 segments of the AS5600 to 0–360 degrees
+    // 360 degrees / 4096 segments = 0.087890625 degrees per segment
+    return difference * 0.087890625;
+}
+
+String receivedMessage;
+
+void parseReceivedMessage(char receivedChar)
+{
+    // Append characters to the received message
+    receivedMessage += receivedChar;
+}
+
+void handleCommand()
+{
+    // Implement logic to handle different commands
+    if (receivedMessage.startsWith(CHECK_READY))
+    {
+        // Send a ready signal to indicate that Arduino is ready to receive commands
+        Serial.println("READY");
+    }
+    else if (receivedMessage.startsWith(GET_POSITION))
+    {
+        // Send the current position of the stepper motor over serial
+        Serial.println(stepper.currentPosition());
+    }
+    else if (receivedMessage.startsWith(GET_POSITION_PENDULUM))
+    {
+        // Get the pendulum position
+        float pendulum_actual_deg = convertRawAngleToDegrees();
+
+        // Send the current position of the pendulum over serial
+        Serial.println(pendulum_actual_deg);
+    }
+    else if (receivedMessage.startsWith(SET_TARGET))
+    {
+        // Extract the target position from the message
+        // For example, "4 1000" will set the target position to 1000
+        String targetPosString = receivedMessage.substring(2);
+
+        // Set the new target position
+        motor_target_pos = targetPosString.toInt();
+    }
+    else if (receivedMessage.startsWith(START_MOTOR))
+    {
+        // Enable the motor outputs
+        stepper.enableOutputs();
+
+        // Set the motor_running flag to true
+        motor_running = true;
+    }
+    else if (receivedMessage.startsWith(STOP_MOTOR))
+    {
+        // Stop the motor
+        stepper.stop();
+
+        // Disable the motor outputs
+        stepper.disableOutputs();
+
+        // Set the motor_running flag to false
+        motor_running = false;
+    }
+
+    // Reset the received message
+    receivedMessage = "";
+}

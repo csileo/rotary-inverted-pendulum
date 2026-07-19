@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<robot name="inverted_pendulum">
+
+    <!-- Base (fixed to the world origin) -->
+    <link name="base">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://meshes/base.dae" />
+            </geometry>
+        </visual>
+    </link>
+
+    <!-- Arm (actuated by stepper motor) -->
+    <link name="arm">
+        <inertial>
+            <origin
+                xyz="0.041 0 0.011"
+                rpy="0 0 0" />
+            <!-- <mass value="0.03477272" /> -->
+            <mass value="0.026" />
+            <inertia
+                ixx="0.00000429"
+                ixy="0"
+                ixz="-0.00000175"
+                iyy="0.00001756"
+                iyz="0"
+                izz="0.0000173" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://meshes/arm.dae" />
+            </geometry>
+        </visual>
+    </link>
+
+    <!-- Pendulum (swings freely on the arm).
+         Mass, COM, and inertia from Onshape CAD (custom PLA densities to
+         match measured 14 g pendulum mass at the printed infill %s; 2p
+         coin modelled; diametric magnet omitted, ~0.3 g near the pivot).
+         Cross-checked against sysid free-swing period: m·g·d/ω² gives
+         I_axis ≈ 4.48e-5 kg·m², matching m·d² + Lxx = 4.46e-5 within 1%.
+         Physical COM confirmed by balance-point measurement: ~51 mm from
+         pivot. Measured period: 10 half-swings in 2.45 s → T ≈ 490 ms
+         → ω_n ≈ 12.8 rad/s, consistent with model prediction of 500 ms.
+         Inertia tensor is about the COM with axes aligned to the link
+         frame; swing axis is x (matching the arm_to_pendulum joint).
+         The 0.062 x-offset is the link-frame convention from the original
+         model (offset along the rotation axis, no swing effect). -->
+    <link name="pendulum">
+        <inertial>
+            <origin
+                xyz="0.062 0 -0.051"
+                rpy="0 0 0" />
+            <mass value="0.014" />
+            <inertia
+                ixx="0.00000806"
+                ixy="0"
+                ixz="0"
+                iyy="0.00000855"
+                iyz="0.00000019"
+                izz="0.00000061" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://meshes/pendulum.dae" />
+            </geometry>
+        </visual>
+    </link>
+
+    <!-- Revolute joint for arm (actuated) -->
+    <joint name="base_to_arm" type="revolute">
+        <parent link="base" />
+        <child link="arm" />
+        <origin xyz="0 0 0.075" rpy="0 0 -1.57079" />
+        <axis xyz="0 0 1" />
+    </joint>
+
+    <!-- Ball joint for pendulum (free swinging) -->
+    <joint name="arm_to_pendulum" type="continuous">
+        <parent link="arm" />
+        <child link="pendulum" />
+        <origin xyz="0 0 0.014" rpy="0 0 0" />
+        <axis xyz="1 0 0" />
+    </joint>
+
+</robot>
