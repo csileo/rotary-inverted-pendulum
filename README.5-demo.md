@@ -16,7 +16,7 @@ arduino-cli compile --upload -p <PORT> --fqbn arduino:avr:nano:cpu=atmega328 Rot
 ```bash
 python -m venv .venv
 .venv\Scripts\activate   # macOS/Linux: source .venv/bin/activate
-pip install -r RotaryInvertedPendulum-python/src/rl/requirements.txt
+pip install -r requirements.txt
 ```
 
 ## 3. Run a policy

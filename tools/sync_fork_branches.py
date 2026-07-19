@@ -120,7 +120,7 @@ LEVEL5_FILES = [
         "RotaryInvertedPendulum-arduino/LowLevelServer/StepperUtils.h",
     ),
     ("README.5-demo.md", "README.md"),
-    ("requirements.5-demo.txt", f"{RL_DIR}/requirements.txt"),
+    ("requirements.5-demo.txt", "requirements.txt"),
 ]
 
 
