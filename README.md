@@ -21,6 +21,17 @@ A DIY rotary inverted pendulum you can print, solder, and train at home — for 
 - **Train a policy** — [`RotaryInvertedPendulum-python/README.md`](RotaryInvertedPendulum-python/README.md) walks through the simulation and training pipeline
 - **Understand the RL stack** — [`docs/rl_transitions.md`](docs/rl_transitions.md), [`docs/domain_randomization.md`](docs/domain_randomization.md), [`docs/transport_delay.md`](docs/transport_delay.md), [`docs/quantisation.md`](docs/quantisation.md), [`docs/sysid_runbook.md`](docs/sysid_runbook.md)
 
+## Branches
+
+`main` has everything, including the trained checkpoints. Four narrower branches exist for handing off less than the whole thing:
+
+| Branch             | Contents                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `2-full-no-models` | Everything except `models/` and `logs/`                                                                                                                                     |
+| `3-rl-ready`       | Just the RL pipeline ([`RotaryInvertedPendulum-python/src/rl/`](RotaryInvertedPendulum-python/src/rl)) — run the training scripts as-is                                          |
+| `4-diy-rl`         | Just the physical parameters ([`sysid_params.json`](RotaryInvertedPendulum-python/src/rl/sysid_params.json), [`docs/rig_geometry_parameters.md`](docs/rig_geometry_parameters.md)) — write your own sim and training from scratch |
+| `5-demo`           | Just enough to run the best checkpoint on the rig                                                                                                                                |
+
 ## Prefer to buy rather than build?
 
 DIY kits run [$100–$200 on AliExpress](https://www.aliexpress.com/w/wholesale-rotary-inverted-pendulum.html); the Quanser QUBE Servo 2 mentioned above is around £4,500.
