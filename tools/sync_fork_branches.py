@@ -29,7 +29,8 @@ Usage:
 
 Content per level (see docs/rig_geometry_parameters.md and the RL docs for
 what levels 3/4 are meant to teach), see also README.md's "Branches" table:
-- 2-full-no-models: main minus models/, logs/ and tools/.
+- 2-full-no-models: main minus models/ and logs/ (see README.md's "Branches"
+  table — tools/ is NOT excluded here, it's just not a level-3/4 dependency).
 - 3-rl-ready: RotaryInvertedPendulum-python/src/rl/ (minus sysid_wizard.py,
   models/, logs/) + the RL-paradigm docs + urdf/model.urdf (required
   at runtime by pendulum_geometry.py, even though the meshes are not).
@@ -63,7 +64,6 @@ ALWAYS_FILES = ["LICENSE"]
 LEVEL2_EXCLUDE_PREFIXES = [
     f"{RL_DIR}/models/",
     f"{RL_DIR}/logs/",
-    "tools/",
 ]
 
 LEVEL3_EXCLUDE = [
