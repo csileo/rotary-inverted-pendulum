@@ -1,0 +1,17 @@
+# Full deps for the RL pipeline: simulation, training, fine-tuning on
+# hardware, and analysis (sysid, distillation, TensorBoard logs).
+# stable-baselines3 pulls in torch automatically; on a machine without a
+# GPU, install the CPU-only wheel first to skip the multi-GB CUDA download:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# Just running a trained checkpoint on the rig (no training/sim)? See the
+# `demo` branch's requirements.txt for a much smaller inference-only set.
+numpy
+torch
+gymnasium
+mujoco
+stable-baselines3
+scipy
+matplotlib
+tensorboard
+pyserial
