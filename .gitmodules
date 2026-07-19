@@ -1,3 +1,0 @@
-[submodule "RotaryInvertedPendulum-arduino/libs/AccelStepper"]
-	path = RotaryInvertedPendulum-arduino/libs/AccelStepper
-	url = https://github.com/waspinator/AccelStepper.git
