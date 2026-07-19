@@ -1,4 +1,0 @@
-# Ignore all experiment data files
-*
-# But keep this .gitignore
-!.gitignore
