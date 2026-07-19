@@ -39,9 +39,13 @@ what levels 3/4 are meant to teach), see also README.md's "Branches" table:
 - demo: just enough to run inference against the real rig with the
   three reference models (working balance, partial balance, fails to
   swing up - run_policy.py's actual runtime deps only - NOT
-  async_control.py/real_env.py, which are finetune_async.py-only), the
-  LowLevelServer firmware to flash, an ad-hoc README.md (flash + install +
-  run commands) and a minimal requirements.txt - not the generic
+  async_control.py/real_env.py, which are finetune_async.py-only), plus
+  train_sac.py's simulation-only --eval path (pendulum_env.py,
+  pendulum_geometry.py, reward.py, sysid_params.json, urdf/model.urdf -
+  same "meshes not required" reasoning as level 3), the LowLevelServer
+  firmware to flash, an ad-hoc README.md (flash + install + run commands)
+  and a requirements.txt that adds gymnasium + mujoco on top of the
+  inference-only set for that --eval path - not the generic
   RotaryInvertedPendulum-arduino/README.md (documents sketches this level
   doesn't even have) and not a training-sized requirements list.
 """
@@ -99,6 +103,12 @@ LEVEL5_FILES = [
     (f"{RL_DIR}/run_policy.py", f"{RL_DIR}/run_policy.py"),
     (f"{RL_DIR}/frame_stack.py", f"{RL_DIR}/frame_stack.py"),
     (f"{RL_DIR}/lowlevel_client.py", f"{RL_DIR}/lowlevel_client.py"),
+    (f"{RL_DIR}/train_sac.py", f"{RL_DIR}/train_sac.py"),
+    (f"{RL_DIR}/pendulum_env.py", f"{RL_DIR}/pendulum_env.py"),
+    (f"{RL_DIR}/pendulum_geometry.py", f"{RL_DIR}/pendulum_geometry.py"),
+    (f"{RL_DIR}/reward.py", f"{RL_DIR}/reward.py"),
+    (f"{RL_DIR}/sysid_params.json", f"{RL_DIR}/sysid_params.json"),
+    ("urdf/model.urdf", "urdf/model.urdf"),
     (
         f"{RL_DIR}/models/policy_working_balance.zip",
         f"{RL_DIR}/models/policy_working_balance.zip",
