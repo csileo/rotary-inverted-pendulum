@@ -107,4 +107,4 @@ for label, _, cmd in stages:
 
 print("=== Curriculum complete ===")
 print(f"Deploy: python run_policy.py --policy runs/{last_stage}/best_model.zip "
-      f"--port COM4 --control-freq {CONTROL_FREQ} --log logs/run_{PREFIX}.npz")
+      f"--port <PORT> --control-freq {CONTROL_FREQ} --log logs/run_{PREFIX}.npz")

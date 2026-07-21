@@ -1,0 +1,103 @@
+{
+  "motor_step": {
+    "fit": {
+      "effective_delay_s_estimate": 0.06796800000000758,
+      "rise_time_95_s": 0.06796800000000758,
+      "steady_state_error_rad": -0.0015487074851989746,
+      "step_amplitude_rad": 0.30000001192092896,
+      "step_edge_time_s": 0.0
+    },
+    "source_file": "step_amp_0.30.npz"
+  },
+  "pendulum": {
+    "derived": {
+      "viscous_friction_N_m_s": 9.574199256999525e-06,
+      "coulomb_friction_N_m": 2.9311843195099424e-05,
+      "inertia_predicted_kg_m2": 4.447446e-05,
+      "inertia_measured_kg_m2": 4.468763e-05
+    },
+    "fit": {
+      "decay_constant_s_inv": 0.10763871826390838,
+      "decay_constant_s_inv_all_runs": [
+        0.10763871826390838,
+        0.09121278922564374,
+        0.10893435808812538
+      ],
+      "decay_constant_s_inv_stdev": 0.008066004313522562,
+      "decay_constant_visc_only_s_inv": 0.14992836251497732,
+      "delta_c_per_half_cycle_rad": 0.00836959848126875,
+      "delta_c_per_half_cycle_rad_all_runs": [
+        0.00836959848126875,
+        0.011225033508129497,
+        0.00786082311199854
+      ],
+      "delta_c_per_half_cycle_rad_stdev": 0.0014806257370312838,
+      "envelope_rmse_combined_rad": 0.015549241287738174,
+      "envelope_rmse_visc_only_rad": 0.04267008453480644,
+      "initial_amplitude_rad": 1.595205245460267,
+      "mean_pair_amplitude_rad": 0.8077971028729396,
+      "median_run_index": 0,
+      "n_extrema_used": 36,
+      "n_runs": 3,
+      "omega_d_rad_s": 11.93451803258681,
+      "omega_d_rad_s_all_runs": [
+        11.93451803258681,
+        11.967513100698405,
+        11.934497865274876
+      ],
+      "omega_d_rad_s_stdev": 0.015558779931030808,
+      "omega_n_rad_s": 11.935003425379032,
+      "omega_n_rad_s_all_runs": [
+        11.935003425379032,
+        11.96786069388787,
+        11.934995014268864
+      ],
+      "omega_n_rad_s_stdev": 0.015491047814168844,
+      "omega_n_small_amp_rad_s": 12.51954160363005,
+      "omega_n_small_amp_rad_s_all_runs": [
+        12.521208873898665,
+        12.495909641972409,
+        12.51954160363005
+      ],
+      "omega_n_small_amp_rad_s_stdev": 0.0115532609056939,
+      "period_s": 0.5264716421747032,
+      "period_s_all_runs": [
+        0.5264716421747032,
+        0.5250201319447823,
+        0.5264725318240167
+      ],
+      "period_s_stdev": 0.0006844582730761283,
+      "r_per_half_cycle": 0.9720632871710567,
+      "r_per_half_cycle_all_runs": [
+        0.9720632871710567,
+        0.976340114485286,
+        0.9717317658626218
+      ],
+      "r_per_half_cycle_stdev": 0.0020986248217369904,
+      "rest_angle_rad": -0.008412422981113195,
+      "small_amp_period_s": 0.5018702366353232,
+      "small_amp_period_s_all_runs": [
+        0.5018034097552134,
+        0.5028193614712967,
+        0.5018702366353232
+      ],
+      "small_amp_period_s_stdev": 0.000463975774700399,
+      "zeta": 0.00901874213416826,
+      "zeta_all_runs": [
+        0.00901874213416826,
+        0.007621478187177363,
+        0.00912730654331142
+      ],
+      "zeta_stdev": 0.0006856993029528792
+    }
+  },
+  "run_meta": {
+    "collected_at": "2026-05-20T09:28:39",
+    "firmware": "LowLevelServer.ino",
+    "fitted_at": "2026-05-20T09:38:35",
+    "hanging_zero_rad": 0.003067962359637022,
+    "in_dir": "/Users/henrique/git/Rotary Inverted Pendulum/RotaryInvertedPendulum-python/src/rl/sysid_runs/2026-05-20_092812",
+    "n_free_swing_runs": 3,
+    "wizard_version": "2026-05-20"
+  }
+}

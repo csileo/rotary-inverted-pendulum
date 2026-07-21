@@ -104,8 +104,19 @@ sysid_runs/2026-05-20_HHMMSS/
 └── motor_sweep.png             # motor target vs. firmware-reported position
 ```
 
-`sysid_params.json` (the only file the RL pipeline reads) is written at
-the project root by default.
+`sysid_params.json` (the file the RL pipeline reads) is written at the
+project root by default. It's gitignored — it's this specific rig's live
+measurement (bearings, grease, and temperature all vary between physical
+units, per CLAUDE.md), so it isn't shared across forks/rigs. If it's
+missing, `pendulum_env.py` falls back to `sysid_profiles/aliexpress_uk.json`
+(the reference values for the original kit) with a loud warning, since
+silently running with someone else's friction numbers would just make
+control subtly wrong rather than fail outright. Run this wizard to replace
+that fallback with your own rig's measurement. If you want to keep a
+snapshot of your own numbers as a named reference (e.g. to propose upstream
+alongside a different kit's BOM), copy `sysid_params.json` into
+`sysid_profiles/<name>.json` — that directory is version-controlled,
+`sysid_params.json` itself is not.
 
 ## What the math does
 

@@ -28,7 +28,13 @@ class. Updating a number in any other place is a bug — the chain is:
   written to `RotaryInvertedPendulum-python/src/rl/sysid_params.json`,
   loaded into `PendulumParams` alongside the URDF constants. These do
   vary between rebuilds (bearings, grease, temperature) and are the
-  only quantities the sysid pipeline measures.
+  only quantities the sysid pipeline measures. `sysid_params.json` is
+  gitignored (it's this physical unit's live measurement, not something
+  to share across forks) — `sysid_profiles/*.json` holds versioned
+  reference values for known kits (see `docs/BOM.md`'s sourcing
+  sections), and `pendulum_env.py` falls back to
+  `sysid_profiles/aliexpress_uk.json` with a warning if the live file is
+  absent.
 
 - **Arm geometry** (length, mass, COM): currently hard-coded constants
   in `pendulum_env.py` (`ARM_*`). When CAD-validated, will follow the
@@ -37,6 +43,16 @@ class. Updating a number in any other place is a bug — the chain is:
 - **Hardware/firmware constants** (motor max accel, AS5600 resolution,
   hard-stop limits): module constants in `pendulum_env.py`, with the
   Arduino firmware as the upstream source for the motor-side values.
+
+- **AS5600 I2C backend** (module quality varies between AS5600 breakout
+  sources — see `docs/BOM.md`): selected by
+  `RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h`, gitignored
+  with no safe default. Versioned reference implementations live in that
+  directory's `hw_profiles/`; copy the one matching your module. Same
+  per-rig-hardware pattern as `sysid_params.json` above, applied to
+  firmware source instead of measured data — see that directory's
+  comments and `tools/pi_demo/flash_if_needed.py` (refuses to compile
+  without it).
 
 ## Overview
 

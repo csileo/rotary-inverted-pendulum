@@ -91,6 +91,19 @@ Low-level server for computer-controlled operation. Arduino acts as a slave, rec
 julia --project=./RotaryInvertedPendulum-julia ./RotaryInvertedPendulum-arduino/LowLevelServer/client.jl --visualise
 ```
 
+**Before compiling**, copy the AS5600 backend matching your encoder module
+from `LowLevelServer/hw_profiles/` to `LowLevelServer/hw_config.h`
+(gitignored — no safe default, see that directory's files and
+`docs/BOM.md` for which module you likely have):
+
+```bash
+cp LowLevelServer/hw_profiles/as5600_hailege_clone.h LowLevelServer/hw_config.h  # Hailege clone
+# or
+cp LowLevelServer/hw_profiles/as5600_seeed.h LowLevelServer/hw_config.h          # genuine Seeed module
+```
+
+`tools/pi_demo/flash_if_needed.py` refuses to compile without this file present.
+
 #### PIDControl
 
 Self-contained PID controller running entirely on Arduino. No computer required after flashing.

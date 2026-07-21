@@ -96,7 +96,11 @@ LEVEL3_EXTRA_FILES = [
 ]
 
 LEVEL4_FILES = [
-    f"{RL_DIR}/sysid_params.json",
+    # sysid_params.json itself is gitignored (per-rig live measurement, see
+    # sysid_runbook.md) - ship the reference profile as the worked example
+    # instead, so the colleague still sees real numbers to sanity-check
+    # their own measurement against.
+    f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
     "docs/sysid_runbook.md",
     "docs/rig_geometry_parameters.md",
 ]
@@ -112,7 +116,10 @@ LEVEL5_FILES = [
     (f"{RL_DIR}/pendulum_env.py", f"{RL_DIR}/pendulum_env.py"),
     (f"{RL_DIR}/pendulum_geometry.py", f"{RL_DIR}/pendulum_geometry.py"),
     (f"{RL_DIR}/reward.py", f"{RL_DIR}/reward.py"),
-    (f"{RL_DIR}/sysid_params.json", f"{RL_DIR}/sysid_params.json"),
+    (
+        f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
+        f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
+    ),
     ("urdf/model.urdf", "urdf/model.urdf"),
     (
         f"{RL_DIR}/models/policy_working_balance.zip",
@@ -142,10 +149,20 @@ LEVEL5_FILES = [
         "RotaryInvertedPendulum-arduino/LowLevelServer/gen_firmware_version.py",
         "RotaryInvertedPendulum-arduino/LowLevelServer/gen_firmware_version.py",
     ),
+    (
+        "RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/as5600_seeed.h",
+        "RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/as5600_seeed.h",
+    ),
+    (
+        "RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/as5600_hailege_clone.h",
+        "RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/as5600_hailege_clone.h",
+    ),
     ("tools/pi_demo/pi_demo_common.py", "tools/pi_demo/pi_demo_common.py"),
     ("tools/pi_demo/flash_if_needed.py", "tools/pi_demo/flash_if_needed.py"),
     ("tools/pi_demo/check_motor_power.py", "tools/pi_demo/check_motor_power.py"),
     ("tools/pi_demo/run_demo.py", "tools/pi_demo/run_demo.py"),
+    ("tools/pi_demo/detect_usb_config.py", "tools/pi_demo/detect_usb_config.py"),
+    ("tools/pi_demo/usb_profiles/ch340.json", "tools/pi_demo/usb_profiles/ch340.json"),
     ("tools/pi_demo/README.md", "tools/pi_demo/README.md"),
     ("README.5-demo.md", "README.md"),
     ("requirements.5-demo.txt", "requirements.txt"),

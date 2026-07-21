@@ -7,10 +7,16 @@ in at compile time by LowLevelServer/gen_firmware_version.py) against a
 fresh hash computed from the local .ino/.h source — see that script for
 what's hashed.
 
-Usage:
-    python flash_if_needed.py [--port COM3] [--vid 1A86] [--pid 7523] [--fqbn ...]
+Also requires RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h to
+exist before compiling: it selects which AS5600 I2C backend to build (see
+hw_profiles/ in that directory) and there is no safe default to guess —
+building with the wrong one for this rig's encoder module can corrupt
+sensor readings feeding a live motor control loop.
 
-If --port is omitted, the Nano is auto-discovered by USB VID:PID (see
+Usage:
+    python flash_if_needed.py [--port COM3] [--fqbn ...]
+
+If --port is omitted, the Nano is auto-discovered by USB vid/pid (see
 pi_demo_common.py) — works the same way on Linux, macOS, and Windows.
 """
 
@@ -20,15 +26,30 @@ import argparse
 import subprocess
 import sys
 
-from pi_demo_common import DEFAULT_PID, DEFAULT_VID, REPO_ROOT, find_nano_port
+from pi_demo_common import REPO_ROOT, find_nano_port
 
 from lowlevel_client import LowLevelClient  # noqa: E402  (path set up by pi_demo_common)
 
 SKETCH_DIR = REPO_ROOT / "RotaryInvertedPendulum-arduino" / "LowLevelServer"
 GEN_SCRIPT = SKETCH_DIR / "gen_firmware_version.py"
 VERSION_HEADER = SKETCH_DIR / "firmware_version.h"
+HW_CONFIG_PATH = SKETCH_DIR / "hw_config.h"
+HW_PROFILES_DIR = SKETCH_DIR / "hw_profiles"
 
 DEFAULT_FQBN = "arduino:avr:nano:cpu=atmega328"
+
+
+def _ensure_hw_config() -> None:
+    if HW_CONFIG_PATH.exists():
+        return
+    available = sorted(p.name for p in HW_PROFILES_DIR.glob("*.h")) if HW_PROFILES_DIR.exists() else []
+    raise RuntimeError(
+        f"{HW_CONFIG_PATH} is missing. This selects which AS5600 I2C "
+        "backend to compile — there is no safe default (the wrong one for "
+        "this rig's encoder module can corrupt sensor readings). Copy one "
+        f"of {available or '<no profiles found>'} from {HW_PROFILES_DIR} "
+        "to hw_config.h, matching your AS5600 module (see docs/BOM.md)."
+    )
 
 
 def _local_expected_hash() -> int:
@@ -58,12 +79,13 @@ def _flash(port: str, fqbn: str) -> None:
     )
 
 
-def ensure_flashed(port: str | None = None, fqbn: str = DEFAULT_FQBN,
-                    vid: int = DEFAULT_VID, pid: int = DEFAULT_PID) -> str:
+def ensure_flashed(port: str | None = None, fqbn: str = DEFAULT_FQBN) -> str:
     """Flash if needed; returns the port actually used (handy when the
     caller passed None and this had to auto-discover it)."""
+    _ensure_hw_config()
+
     if port is None:
-        port = find_nano_port(vid, pid)
+        port = find_nano_port()
 
     expected = _local_expected_hash()
     actual = _device_hash(port)
@@ -91,19 +113,13 @@ def ensure_flashed(port: str | None = None, fqbn: str = DEFAULT_FQBN,
     return port
 
 
-def _parse_hex(s: str) -> int:
-    return int(s, 16)
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", default=None,
-                   help="serial port; auto-discovered via VID:PID if omitted")
-    p.add_argument("--vid", type=_parse_hex, default=DEFAULT_VID, help="USB vendor ID, hex")
-    p.add_argument("--pid", type=_parse_hex, default=DEFAULT_PID, help="USB product ID, hex")
+                   help="serial port; auto-discovered via usb_config.json if omitted")
     p.add_argument("--fqbn", default=DEFAULT_FQBN)
     args = p.parse_args(argv)
-    ensure_flashed(args.port, args.fqbn, args.vid, args.pid)
+    ensure_flashed(args.port, args.fqbn)
     return 0
 
 
