@@ -4,6 +4,7 @@
 #include <util/twi.h>
 
 #include "StepperUtils.h"
+#include "firmware_version.h"
 
 // Direct polling TWI read for AS5600 RAW_ANGLE register.
 // Bypasses the Wire library's interrupt-driven state machine entirely,
@@ -92,6 +93,7 @@ const long BAUD_RATE = 2000000;
 #define CMD_DISENGAGE_MOTOR 0x05
 #define CMD_TARE_PENDULUM 0x06   // re-zero pen_position_rad to current AS5600 reading
 #define CMD_DEBUG_I2C     0x07   // diagnostic: raw I2C read, returns 4 bytes [rc, n, hi, lo]
+#define CMD_GET_FIRMWARE_VERSION 0x08   // returns 4-byte hash of the running sketch source
 
 // Pin assignments. STEP must be on pin 9 (Timer1 OC1A on ATmega328) for
 // FastAccelStepper. DIR and ENABLE can be any digital pin.
@@ -483,6 +485,17 @@ void handleCommand()
         }
         interrupts();
         Serial.write(CMD_TARE_PENDULUM);  // ack
+        break;
+
+    case CMD_GET_FIRMWARE_VERSION:
+        {
+            // Lets the host tell "this Nano already has the exact sketch
+            // I'd flash" apart from "stale/wrong/blank" without actually
+            // reflashing — see gen_firmware_version.py and
+            // tools/pi_demo/flash_if_needed.py.
+            uint32_t version = FIRMWARE_VERSION_HASH;
+            Serial.write((byte *)&version, sizeof(version));
+        }
         break;
 
     case CMD_DEBUG_I2C:

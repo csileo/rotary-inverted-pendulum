@@ -12,6 +12,7 @@ RotaryInvertedPendulum-arduino/LowLevelServer/LowLevelServer.ino:
     0x03 SET_ACCEL + float   commanded angular acceleration in rad/s²
     0x04 ENGAGE_MOTOR
     0x05 DISENGAGE_MOTOR
+    0x08 GET_FIRMWARE_VERSION -> board returns 4 bytes: uint32 source hash
 
 Sign convention: LowLevelServer flips the sign of motor and pendulum
 positions AND velocities on output. We pass the raw bytes through;
@@ -40,10 +41,13 @@ CMD_SET_ACCEL = 0x03  # was CMD_SET_TARGET (position-mode); now angular accelera
 CMD_ENGAGE_MOTOR = 0x04
 CMD_DISENGAGE_MOTOR = 0x05
 CMD_TARE_PENDULUM = 0x06
+CMD_GET_FIRMWARE_VERSION = 0x08
 
 # time_us (uint32 LE), motor_pos, pen_pos, motor_vel, pen_vel (4× float32 LE).
 _STATE_STRUCT = struct.Struct("<Iffff")
 _STATE_SIZE = _STATE_STRUCT.size  # 20 bytes
+
+_VERSION_STRUCT = struct.Struct("<I")
 
 
 @dataclass(frozen=True)
@@ -189,3 +193,19 @@ class LowLevelClient:
             self.ser.flush()
             resp = self.ser.read(1)
         return resp == bytes([CMD_TARE_PENDULUM])
+
+    def get_firmware_version(self) -> int | None:
+        """Return the running sketch's source hash, or None on no/short reply.
+
+        Compares against tools/pi_demo/flash_if_needed.py's local
+        recomputation (via gen_firmware_version.py) to decide whether a
+        Nano already has the exact firmware a demo launch would flash.
+        """
+        with self._lock:
+            self.ser.write(bytes([CMD_GET_FIRMWARE_VERSION]))
+            self.ser.flush()
+            buf = self.ser.read(_VERSION_STRUCT.size)
+        if len(buf) != _VERSION_STRUCT.size:
+            return None
+        (version,) = _VERSION_STRUCT.unpack(buf)
+        return int(version)
