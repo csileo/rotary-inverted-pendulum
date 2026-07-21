@@ -6,81 +6,14 @@
 #include "StepperUtils.h"
 #include "firmware_version.h"
 
-// Direct polling TWI read for AS5600 RAW_ANGLE register.
-// Bypasses the Wire library's interrupt-driven state machine entirely,
-// which eliminates sensitivity to Timer1 ISR preemption. Retries up to
-// AS5600_MAX_RETRIES times (each retry adds ~100 µs for the NACK+delay).
-#define AS5600_I2C_ADDR  0x36
-#define AS5600_RAW_REG   0x0C
-#define AS5600_MAX_RETRIES 3
-
-static bool as5600_read_polling(long* out)
-{
-    // Suspend Wire ISR so it doesn't race with our direct register access.
-    uint8_t saved_twcr_twie = TWCR & _BV(TWIE);
-    TWCR &= ~_BV(TWIE);
-
-    bool ok = false;
-    for (uint8_t attempt = 0; attempt < AS5600_MAX_RETRIES && !ok; attempt++)
-    {
-        if (attempt > 0) delayMicroseconds(150);
-
-        uint16_t to;
-
-        // START
-        TWCR = _BV(TWINT) | _BV(TWSTA) | _BV(TWEN);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to || (TWSR & 0xF8) != TW_START) goto stop_retry;
-
-        // SLA+W
-        TWDR = AS5600_I2C_ADDR << 1;
-        TWCR = _BV(TWINT) | _BV(TWEN);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to || (TWSR & 0xF8) != TW_MT_SLA_ACK) goto stop_retry;
-
-        // Register address
-        TWDR = AS5600_RAW_REG;
-        TWCR = _BV(TWINT) | _BV(TWEN);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to || (TWSR & 0xF8) != TW_MT_DATA_ACK) goto stop_retry;
-
-        // Repeated START
-        TWCR = _BV(TWINT) | _BV(TWSTA) | _BV(TWEN);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to || (TWSR & 0xF8) != TW_REP_START) goto stop_retry;
-
-        // SLA+R
-        TWDR = (AS5600_I2C_ADDR << 1) | 1;
-        TWCR = _BV(TWINT) | _BV(TWEN);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to || (TWSR & 0xF8) != TW_MR_SLA_ACK) goto stop_retry;
-
-        // Read high byte (ACK)
-        TWCR = _BV(TWINT) | _BV(TWEN) | _BV(TWEA);
-        for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-        if (!to) goto stop_retry;
-        {
-            uint8_t hi = TWDR;
-            // Read low byte (NACK — last byte)
-            TWCR = _BV(TWINT) | _BV(TWEN);
-            for (to = 20000; to && !(TWCR & _BV(TWINT)); to--);
-            if (!to) goto stop_retry;
-            uint8_t lo = TWDR;
-            *out = ((long)hi << 8 | lo) & 0x0FFF;
-            ok = true;
-        }
-
-        stop_retry:
-        // Always send STOP to release the bus before next attempt or exit.
-        TWCR = _BV(TWINT) | _BV(TWSTO) | _BV(TWEN);
-        // Wait for STOP to complete (TWSTO clears itself when done).
-        for (uint16_t w = 10000; w && (TWCR & _BV(TWSTO)); w--);
-    }
-
-    // Restore Wire ISR
-    if (saved_twcr_twie) TWCR |= _BV(TWIE);
-    return ok;
-}
+// Selects this rig's AS5600 I2C backend (module quality varies — see
+// docs/BOM.md and hw_profiles/ in this directory). hw_config.h is
+// gitignored and has no safe default; flash_if_needed.py refuses to
+// compile without it. It must define:
+//   as5600_backend_setup(AS5600 &dev)         — Wire/bus init
+//   as5600_backend_wait_magnet(AS5600 &dev)   — startup gate (may be a no-op)
+//   as5600_backend_read(AS5600 &dev, long*)   — one RAW_ANGLE read, returns ok
+#include "hw_config.h"
 
 // Communication speed
 const long BAUD_RATE = 2000000;
@@ -191,42 +124,7 @@ void setup()
 {
     Serial.begin(BAUD_RATE);
 
-    // I²C bus recovery: always runs regardless of SDA state. After an
-    // Arduino reset mid-transaction the AS5600 may be holding SDA LOW
-    // (mid-byte) or HIGH (waiting for ACK) — both leave it unable to
-    // respond to a fresh Wire.begin(). Nine SCL pulses let the slave
-    // finish any in-progress byte. The STOP is generated cleanly by
-    // driving SDA LOW while SCL is still LOW (end of last pulse), then
-    // raising SCL HIGH, then raising SDA HIGH — avoiding the spurious
-    // START that occurs if SDA goes LOW while SCL is already HIGH.
-    {
-        const uint8_t SDA_PIN = A4, SCL_PIN = A5;
-        pinMode(SCL_PIN, OUTPUT);
-        pinMode(SDA_PIN, INPUT_PULLUP);
-        for (uint8_t i = 0; i < 9; i++) {
-            digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
-            digitalWrite(SCL_PIN, LOW);  delayMicroseconds(5);
-        }
-        // SCL is now LOW. Drive SDA LOW while SCL LOW (not a START).
-        // Then raise SCL HIGH, then SDA HIGH = clean STOP condition.
-        pinMode(SDA_PIN, OUTPUT);
-        digitalWrite(SDA_PIN, LOW);  delayMicroseconds(5);
-        digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
-        digitalWrite(SDA_PIN, HIGH); delayMicroseconds(5);
-        pinMode(SCL_PIN, INPUT);
-        pinMode(SDA_PIN, INPUT);
-        delay(10);
-    }
-
-    Wire.begin();
-    Wire.setClock(100000);  // 100 kHz: 400 kHz bits (2.5 µs) get corrupted by
-                            // FastAccelStepper Timer1 ISR; 100 kHz (10 µs/bit)
-                            // is robust within the 2 ms sampleState() budget.
-    as5600.begin();
-    // No startup gate on isConnected()/detectMagnet(): both rely on an I²C
-    // write-only probe that is unreliable on this module clone, while
-    // rawAngle() reads work correctly. The host validates state values before
-    // engaging the motor.
+    as5600_backend_setup(as5600);
 
     engine.init();
     stepper = engine.stepperConnectToPin(STEP_PIN);
@@ -247,6 +145,7 @@ void setup()
     stepper->disableOutputs();
 
     while (!Serial) { ; }
+    as5600_backend_wait_magnet(as5600);
     last_sample_us = micros();
 }
 
@@ -288,15 +187,11 @@ void loop()
 void sampleState()
 {
     int32_t motor_step = stepper->getCurrentPosition();
-    // Direct polling TWI read — immune to Timer1 ISR interference.
-    // Masks Timer1 interrupts for the ~500 µs read window to avoid any
-    // preemption of the busy-wait loops. The Wire ISR is also suspended
-    // inside as5600_read_polling() via TWCR.TWIE.
-    uint8_t saved_timsk1 = TIMSK1;
-    TIMSK1 = 0;
+    // Backend-specific read (see hw_config.h / hw_profiles/) — timing
+    // precautions like Timer1 masking, if the backend needs them, are
+    // internal to as5600_backend_read().
     long raw = 0;
-    bool i2c_ok = as5600_read_polling(&raw);
-    TIMSK1 = saved_timsk1;
+    bool i2c_ok = as5600_backend_read(as5600, &raw);
 
     // Pendulum wraparound tracking — only update on successful I²C reads.
     // A failed read (i2c_ok=false) keeps pen_raw_prev unchanged so the next

@@ -46,6 +46,10 @@ from reward import RewardWeights, compute_reward
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_PARAMS_PATH = HERE / "sysid_params.json"
+# Fallback when this rig hasn't been measured yet (fresh clone, no
+# sysid_params.json — it's gitignored, see .gitignore). Reference profiles
+# for known kits live in sysid_profiles/; this is the upstream default.
+FALLBACK_PARAMS_PATH = HERE / "sysid_profiles" / "aliexpress_uk.json"
 
 # Hard-stop on the motor joint. Matches the lid-boss mechanical limit of ±135°,
 # but we clamp the policy at ±125° so the policy never *commands* a stop hit.
@@ -174,6 +178,16 @@ class PendulumParams:
         come from sysid.
         """
         path = Path(path) if path is not None else DEFAULT_PARAMS_PATH
+        if path == DEFAULT_PARAMS_PATH and not path.exists():
+            print(
+                f"WARNING: {path.name} not found (gitignored — this rig "
+                f"hasn't been measured). Falling back to the reference "
+                f"profile {FALLBACK_PARAMS_PATH.relative_to(HERE)}. These "
+                f"are NOT your rig's own friction values. Run "
+                f"sysid_wizard.py to measure your rig, or copy a matching "
+                f"file from sysid_profiles/ to {path.name}."
+            )
+            path = FALLBACK_PARAMS_PATH
         with open(path) as f:
             doc = json.load(f)
         pen = doc["pendulum"]["derived"]

@@ -225,9 +225,29 @@ RotaryInvertedPendulum-python/src/rl/runs/
 # Sysid raw recordings (large binaries; the JSON fit is the artifact, not the raw stream)
 RotaryInvertedPendulum-python/src/rl/recordings/*.npz
 
-# Sysid wizard timestamped run dirs (raw .npz + per-run JSON; the canonical
-# sysid_params.json at the rl/ root is what's versioned)
+# Sysid wizard timestamped run dirs (raw .npz + per-run JSON; per-rig
+# measurements aren't versioned at all, see sysid_params.json below)
 RotaryInvertedPendulum-python/src/rl/sysid_runs/
+
+# sysid_params.json is this rig's live, currently-measured friction/inertia
+# fit — it varies per physical unit (bearings, grease, temperature) and a
+# PR that touched it would collide with anyone else's rig at the same path.
+# Re-run sysid_wizard.py to (re)generate it locally. Versioned reference
+# starting points for known kits live in sysid_profiles/ instead (see
+# pendulum_env.py's fallback and docs/sysid_runbook.md).
+RotaryInvertedPendulum-python/src/rl/sysid_params.json
+
+# tools/pi_demo/usb_config.json is this machine's live, detected Nano
+# USB vid/pid — varies per USB-serial chip, not something to share across
+# forks. Run detect_usb_config.py to (re)generate it locally. Versioned
+# reference profiles for known chips live in tools/pi_demo/usb_profiles/.
+tools/pi_demo/usb_config.json
+
+# RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h selects this
+# rig's AS5600 I2C backend (module quality varies — see docs/BOM.md and
+# hw_profiles/). No safe default: flash_if_needed.py refuses to compile
+# without it rather than guessing.
+RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h
 
 # Lag-probe outputs (timestamped per-run dirs; the conclusions get
 # folded into docs/transport_delay.md, the raw .npz + PNG do not)
