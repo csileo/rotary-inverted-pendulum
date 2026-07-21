@@ -96,7 +96,11 @@ LEVEL3_EXTRA_FILES = [
 ]
 
 LEVEL4_FILES = [
-    f"{RL_DIR}/sysid_params.json",
+    # sysid_params.json itself is gitignored (per-rig live measurement, see
+    # sysid_runbook.md) - ship the reference profile as the worked example
+    # instead, so the colleague still sees real numbers to sanity-check
+    # their own measurement against.
+    f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
     "docs/sysid_runbook.md",
     "docs/rig_geometry_parameters.md",
 ]
