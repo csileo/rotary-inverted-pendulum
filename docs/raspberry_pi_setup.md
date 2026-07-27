@@ -1,76 +1,77 @@
-# Installation d'un Raspberry Pi 3B+ pour le démo autonome
+# Setting up a Raspberry Pi 3B+ for the unattended demo
 
-Guide pas à pas pour transformer un Raspberry Pi 3B+ tout neuf en la
-« brique » qui flashe le Nano, attend que le 12V et l'USB soient branchés
-(dans n'importe quel ordre) et lance la policy de balance — sans écran ni
-clavier une fois que c'est fait. C'est le rôle de
-[`tools/pi_demo/`](../tools/pi_demo/README.md) ; ce document couvre tout ce
-qu'il y a *avant* ça : préparer la carte SD, installer les dépendances sur
-le Pi, et brancher le rig physiquement.
+Step-by-step guide to turn a brand-new Raspberry Pi 3B+ into the piece
+that flashes the Nano, waits for 12V and USB to be plugged in (in any
+order), and starts the balance policy — no screen or keyboard needed once
+it's set up. That runtime behavior is `tools/pi_demo/`'s job (see
+[`tools/pi_demo/README.md`](../tools/pi_demo/README.md)); this document
+covers everything *before* that: preparing the SD card, installing
+dependencies on the Pi, and wiring the rig physically.
 
-## 1. Matériel nécessaire
+## 1. Hardware needed
 
 - Raspberry Pi 3B+
-- Carte micro SD ≥ 8 Go (16-32 Go conseillé), classe 10
-- Alimentation officielle Pi : 5V / 2,5A micro-USB (une alimentation
-  sous-dimensionnée cause des reboots aléatoires sous charge — c'est la
-  cause n°1 de bugs fantômes sur Pi 3B+)
-- Câble USB pour relier le Pi au Nano (le même connecteur que la
-  photo dans `docs/BOM.md` — Micro-USB ou USB-C côté Nano selon le clone)
-- Le rig assemblé avec son alimentation 12V (voir `docs/BOM.md` et
+- micro SD card ≥ 8 GB (16-32 GB recommended), class 10
+- Official Pi power supply: 5V / 2.5A micro-USB (an undersized supply
+  causes random reboots under load — the #1 cause of ghost bugs on a Pi
+  3B+)
+- USB cable to connect the Pi to the Nano (same connector as pictured in
+  `docs/BOM.md` — Micro-USB or USB-C on the Nano side depending on the
+  clone)
+- The assembled rig with its 12V power supply (see `docs/BOM.md` and
   `docs/electronics_design.md`)
-- Un ordinateur pour flasher la carte SD (Windows/macOS/Linux, peu importe)
-- Optionnel : écran HDMI + clavier pour le premier démarrage (sinon tout
-  se fait en headless via SSH, voir étape 2)
+- A computer to flash the SD card (Windows/macOS/Linux, doesn't matter)
+- Optional: HDMI screen + keyboard for the first boot (otherwise
+  everything is done headless over SSH, see step 2)
 
-## 2. Flasher la carte SD
+## 2. Flash the SD card
 
-1. Installer [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-   sur l'ordinateur.
-2. Insérer la carte micro SD.
-3. Dans Raspberry Pi Imager :
-   - **Device** : Raspberry Pi 3
-   - **OS** : *Raspberry Pi OS Lite (64-bit)* — pas besoin d'interface
-     graphique puisque le Pi tournera headless ; ça laisse aussi plus de
-     RAM libre pour PyTorch/stable-baselines3.
-   - **Storage** : la carte SD insérée
-4. Cliquer sur l'engrenage (⚙️, "Edit Settings" / paramètres avancés)
-   **avant** d'écrire l'image, et configurer :
-   - Nom d'hôte (ex. `pendulum-pi`)
-   - Activer SSH → "Use password authentication" (ou clé publique si tu
-     en as une)
-   - Nom d'utilisateur + mot de passe
-   - Wi-Fi (SSID + mot de passe + pays) si le Pi n'est pas en Ethernet
-   - Fuseau horaire / disposition clavier
-5. Écrire l'image, attendre la vérification, éjecter la carte.
+1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+   on the computer.
+2. Insert the micro SD card.
+3. In Raspberry Pi Imager:
+   - **Device**: Raspberry Pi 3
+   - **OS**: *Raspberry Pi OS Lite (64-bit)* — no need for a desktop
+     environment since the Pi will run headless; it also leaves more RAM
+     free for PyTorch/stable-baselines3.
+   - **Storage**: the inserted SD card
+4. Click the gear icon (⚙️, "Edit Settings" / advanced options) **before**
+   writing the image, and configure:
+   - Hostname (e.g. `pendulum-pi`)
+   - Enable SSH → "Use password authentication" (or a public key if you
+     have one)
+   - Username + password
+   - Wi-Fi (SSID + password + country) if the Pi isn't on Ethernet
+   - Timezone / keyboard layout
+5. Write the image, wait for verification, eject the card.
 
-Ces réglages évitent tout écran/clavier physique : le Pi démarre déjà en
-SSH sur le bon réseau.
+These settings avoid any physical screen/keyboard: the Pi boots straight
+into SSH on the right network.
 
-## 3. Premier démarrage et connexion
+## 3. First boot and connection
 
-1. Insérer la carte SD dans le Pi, brancher l'alimentation officielle
-   (pas encore le rig).
-2. Attendre ~1-2 min le premier boot (expansion du système de fichiers,
-   reboot automatique).
-3. Se connecter :
+1. Insert the SD card into the Pi, plug in the official power supply
+   (not the rig yet).
+2. Wait ~1-2 min for the first boot (filesystem expansion, automatic
+   reboot).
+3. Connect:
    ```bash
-   ssh <utilisateur>@pendulum-pi.local
+   ssh <username>@pendulum-pi.local
    ```
-   (ou l'IP directement si `.local`/mDNS ne résout pas sur ton réseau).
-4. Mettre à jour le système :
+   (or the IP directly if `.local`/mDNS doesn't resolve on your network).
+4. Update the system:
    ```bash
    sudo apt update && sudo apt full-upgrade -y
    sudo reboot
    ```
 
-## 4. Dépendances système
+## 4. System dependencies
 
 ```bash
 sudo apt install -y git python3-venv python3-pip curl
 ```
 
-**arduino-cli** (nécessaire pour flasher le Nano depuis le Pi) :
+**arduino-cli** (needed to flash the Nano from the Pi):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
@@ -80,14 +81,14 @@ arduino-cli core install arduino:avr
 arduino-cli lib install FastAccelStepper AS5600
 ```
 
-Vérifier que le Nano est bien vu une fois branché en USB (étape 7) avec
+Confirm the Nano is actually seen once plugged in over USB (step 7) with
 `arduino-cli board list`.
 
-## 5. Cloner le dépôt
+## 5. Clone the repository
 
-Pour un Pi dédié uniquement à faire tourner le démo (pas d'entraînement),
-la branche `demo` suffit — elle ne contient que le firmware, les policies
-de référence, et `tools/pi_demo/` :
+For a Pi dedicated purely to running the demo (no training), the `demo`
+branch is enough — it only carries the firmware, the reference policies,
+and `tools/pi_demo/`:
 
 ```bash
 git clone --branch demo --single-branch \
@@ -95,7 +96,7 @@ git clone --branch demo --single-branch \
 cd rotary-inverted-pendulum
 ```
 
-## 6. Environnement Python
+## 6. Python environment
 
 ```bash
 python3 -m venv .venv
@@ -104,36 +105,35 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Sur un Pi 3B+ (ARM, pas de GPU), `stable-baselines3` installe PyTorch en
-CPU-only automatiquement — ça peut prendre plusieurs minutes, c'est normal.
+On a Pi 3B+ (ARM, no GPU), `stable-baselines3` pulls in PyTorch CPU-only
+automatically — this can take several minutes, that's expected.
 
-## 7. Brancher le Nano et vérifier le module AS5600
+## 7. Plug in the Nano and set up the AS5600 module
 
-1. Brancher le Nano au Pi en USB.
-2. `RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h` est
-   volontairement absent du dépôt (pas de valeur par défaut sûre — voir
-   CLAUDE.md) : copier le profil qui correspond au module AS5600 monté sur
-   ce rig depuis
-   `RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/` :
+1. Plug the Nano into the Pi over USB.
+2. `RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h` is
+   deliberately absent from the repo (no safe default — see CLAUDE.md):
+   copy the profile matching the AS5600 module mounted on this rig from
+   `RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/`:
    ```bash
    cp RotaryInvertedPendulum-arduino/LowLevelServer/hw_profiles/as5600_hailege_clone.h \
       RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h
-   # ou as5600_seeed.h si c'est un module Seeed d'origine — voir docs/BOM.md
+   # or as5600_seeed.h for an original Seeed module — see docs/BOM.md
    ```
-3. Détecter le Nano pour ce Pi précis (à faire une seule fois, ou de
-   nouveau si le Nano est remplacé par un modèle avec une autre puce
-   USB-série) — **débrancher tout le reste en USB avant de lancer ceci**,
-   le script suppose qu'un seul périphérique série est branché :
+3. Detect the Nano for this specific Pi (do this once, or again if the
+   Nano is swapped for one with a different USB-serial chip) — **unplug
+   every other USB-serial device before running this**, the script
+   assumes exactly one serial device is connected:
    ```bash
    cd tools/pi_demo
    python detect_usb_config.py
    cd ../..
    ```
 
-## 8. Test manuel avant automatisation
+## 8. Manual test before automating
 
-Avant de tout automatiser, valider que la chaîne complète fonctionne à la
-main, avec le rig sous 12V et le Nano en USB :
+Before automating anything, confirm the full chain works by hand, with
+the rig powered at 12V and the Nano on USB:
 
 ```bash
 cd RotaryInvertedPendulum-python/src/rl
@@ -141,39 +141,39 @@ python run_policy.py --policy models/policy_working_balance.zip \
     --frame-stack 3 --duration-s 30 --port <PORT>
 ```
 
-`<PORT>` : trouvé avec `arduino-cli board list` (typiquement
-`/dev/ttyUSB0` sur un Pi). Si ça compile/flashe et balance, tout est en
-place ; passer à l'automatisation.
+`<PORT>`: found with `arduino-cli board list` (typically `/dev/ttyUSB0`
+on a Pi). If it compiles/flashes and balances, everything is in place;
+move on to automation.
 
-## 9. Automatiser : `tools/pi_demo/run_demo.py`
+## 9. Automate: `tools/pi_demo/run_demo.py`
 
-C'est ce script qui rend le démo tolérant à l'ordre de branchement —
-alimentation du Pi, 12V du pendule, USB du Nano peuvent être branchés dans
-n'importe quel ordre et avec n'importe quel délai entre eux, il attend
-chaque précondition au lieu d'échouer sur la première absente (voir
+This is the script that makes the demo tolerant to plug-in order — Pi
+power, the pendulum's 12V, and the Nano's USB cable can be plugged in any
+order and with any delay between them; it waits out each precondition
+instead of failing on the first one missing (see
 `tools/pi_demo/README.md`).
 
-Lancer une fois à la main pour vérifier :
+Run it once by hand to check:
 
 ```bash
 cd tools/pi_demo
 python run_demo.py
 ```
 
-Puis l'enrober dans un service `systemd` pour qu'il tourne automatiquement
-à chaque démarrage du Pi (ex. après une coupure de courant) :
+Then wrap it in a `systemd` service so it runs automatically on every Pi
+boot (e.g. after a power outage):
 
 ```bash
 sudo tee /etc/systemd/system/pendulum-demo.service > /dev/null <<'EOF'
 [Unit]
-Description=Rotary inverted pendulum - démo autonome
+Description=Rotary inverted pendulum - unattended demo
 After=network.target
 
 [Service]
 Type=simple
-User=<utilisateur>
-WorkingDirectory=/home/<utilisateur>/rotary-inverted-pendulum/tools/pi_demo
-ExecStart=/home/<utilisateur>/rotary-inverted-pendulum/.venv/bin/python run_demo.py
+User=<username>
+WorkingDirectory=/home/<username>/rotary-inverted-pendulum/tools/pi_demo
+ExecStart=/home/<username>/rotary-inverted-pendulum/.venv/bin/python run_demo.py
 Restart=on-failure
 RestartSec=5
 
@@ -185,58 +185,55 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pendulum-demo.service
 ```
 
-Remplacer `<utilisateur>` par le nom d'utilisateur configuré à l'étape 2.
-`run_demo.py` bloque jusqu'à la fin de la policy (`--duration-s`),
-Ctrl-C/SIGTERM, ou un timeout d'attente — `Restart=on-failure` relance
-proprement le cycle d'attente si besoin (ex. après un débranchement du
-Nano).
+Replace `<username>` with the username configured in step 2.
+`run_demo.py` blocks until the policy finishes (`--duration-s`),
+Ctrl-C/SIGTERM, or a wait step times out — `Restart=on-failure` cleanly
+restarts the wait cycle if needed (e.g. after the Nano gets unplugged).
 
-Variables d'environnement optionnelles (à ajouter sous `[Service]` avec
-`Environment=`, voir `tools/pi_demo/README.md`) :
+Optional environment variables (add under `[Service]` with
+`Environment=`, see `tools/pi_demo/README.md`):
 
-| Variable | Rôle |
+| Variable | Meaning |
 |---|---|
-| `PENDULUM_POLICY` | Chemin vers le checkpoint `.zip`/`.pt` à charger |
-| `PENDULUM_FRAME_STACK` | Doit correspondre au frame-stack d'entraînement du checkpoint |
-| `PENDULUM_DURATION_S` | Durée de la balance avant arrêt |
-| `PENDULUM_MOTOR_POWER_TIMEOUT_S` | Délai max d'attente du 12V avant abandon |
+| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load |
+| `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
+| `PENDULUM_DURATION_S` | How long to balance before stopping |
+| `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
 
-## 10. Montage physique sur le rig
+## 10. Physical mounting on the rig
 
-1. Fixer le Pi près du rig (ex. sous la base), à l'abri des vibrations du
-   moteur et des câbles qui pourraient s'accrocher au bras.
-2. Câble USB : Pi → Nano. Longueur suffisante pour ne pas contraindre le
-   bras en rotation.
-3. Alimentation du Pi : **séparée** du 12V moteur — un adaptateur secteur
-   micro-USB 5V/2,5A dédié, sur une prise différente ou une multiprise
-   fixe (pas de branchement volant qui pourrait tirer sur les fils du
-   rig).
-4. Alimentation 12V du pendule : inchangée, voir `docs/electronics_design.md`
-   et `docs/BOM.md`.
-5. Test final : couper toutes les alimentations, puis les rebrancher dans
-   un ordre totalement arbitraire (12V d'abord, ou USB d'abord, ou Pi
-   d'abord, avec des délais variables entre chaque). Le service doit
-   attendre patiemment et démarrer la balance dès que tout est présent —
-   observer les logs avec :
+1. Mount the Pi near the rig (e.g. under the base), away from motor
+   vibration and cables that could snag the arm.
+2. USB cable: Pi → Nano. Long enough not to constrain the arm's
+   rotation.
+3. Pi power: **separate** from the 12V motor rail — a dedicated
+   micro-USB 5V/2.5A wall adapter, on a different outlet or a fixed power
+   strip (no loose connection that could pull on the rig's wiring).
+4. Pendulum 12V supply: unchanged, see `docs/electronics_design.md` and
+   `docs/BOM.md`.
+5. Final test: cut all power, then plug everything back in in a
+   completely arbitrary order (12V first, or USB first, or Pi first,
+   with varying delays between each). The service should wait patiently
+   and start balancing as soon as everything is present — watch the logs
+   with:
    ```bash
    journalctl -u pendulum-demo.service -f
    ```
 
-## 11. Dépannage
+## 11. Troubleshooting
 
-- **`arduino-cli board list` ne voit pas le Nano** : câble USB
-  défectueux (fréquent avec les câbles "charge only"), ou puce
-  USB-série (CH340 etc.) sans driver — rare sur Raspberry Pi OS qui
-  inclut déjà les drivers usuels.
-- **`flash_if_needed.py` refuse de compiler** : `hw_config.h` manquant —
-  revenir à l'étape 7.
-- **"Timed out waiting for motor power"** : vérifier que l'alimentation
-  12V est bien branchée et que l'interrupteur du rig (si présent, voir
-  BOM) est sur ON ; sinon, défaut de câblage driver/Vref/enable — voir
+- **`arduino-cli board list` doesn't see the Nano**: faulty USB cable
+  (common with "charge only" cables), or a USB-serial chip (CH340 etc.)
+  without a driver — rare on Raspberry Pi OS, which already ships the
+  usual drivers.
+- **`flash_if_needed.py` refuses to compile**: `hw_config.h` is missing —
+  go back to step 7.
+- **"Timed out waiting for motor power"**: check that the 12V adapter is
+  plugged in and the rig's power switch (if present, see BOM) is on;
+  otherwise a driver/Vref/enable wiring fault — see
   `docs/electronics_design.md`.
-- **Le service redémarre en boucle** : `journalctl -u
-  pendulum-demo.service -f` pour voir l'erreur exacte ; le plus souvent
-  un chemin de venv/policy incorrect dans le fichier de service.
-- **Détection USB instable après changement de Nano** : relancer
-  `detect_usb_config.py` (étape 7) avec un seul périphérique série
-  branché.
+- **The service keeps restarting**: `journalctl -u
+  pendulum-demo.service -f` for the exact error; most often a wrong
+  venv/policy path in the service file.
+- **Flaky USB detection after swapping the Nano**: rerun
+  `detect_usb_config.py` (step 7) with only one serial device plugged in.
