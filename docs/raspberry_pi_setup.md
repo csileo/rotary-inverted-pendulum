@@ -108,6 +108,18 @@ pip install -r requirements.txt
 On a Pi 3B+ (ARM, no GPU), `stable-baselines3` pulls in PyTorch CPU-only
 automatically — this can take several minutes, that's expected.
 
+If `pip install` fails partway through the PyTorch download with `OSError:
+[Errno 28] No space left on device`, it's very likely not the SD card itself:
+`/tmp` on Raspberry Pi OS is often a `tmpfs` (RAM-backed) mount sized at
+~50% of RAM, e.g. ~450 MB on a Pi 3B+'s 1 GB — too small for the ~430 MB
+PyTorch wheel pip downloads/unpacks there. Confirm with `mount | grep /tmp`,
+then point pip at a temp dir on the SD card instead:
+
+```bash
+mkdir -p ~/pip_tmp
+TMPDIR=~/pip_tmp pip install -r requirements.txt
+```
+
 ## 7. Plug in the Nano and set up the AS5600 module
 
 1. Plug the Nano into the Pi over USB.
