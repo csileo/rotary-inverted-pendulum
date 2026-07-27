@@ -164,6 +164,7 @@ LEVEL5_FILES = [
     ("tools/pi_demo/detect_usb_config.py", "tools/pi_demo/detect_usb_config.py"),
     ("tools/pi_demo/usb_profiles/ch340.json", "tools/pi_demo/usb_profiles/ch340.json"),
     ("tools/pi_demo/README.md", "tools/pi_demo/README.md"),
+    ("docs/raspberry_pi_setup.md", "docs/raspberry_pi_setup.md"),
     ("README.5-demo.md", "README.md"),
     ("requirements.5-demo.txt", "requirements.txt"),
 ]
