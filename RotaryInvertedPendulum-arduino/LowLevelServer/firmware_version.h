@@ -2,4 +2,4 @@
 // Hashes LowLevelServer.ino + StepperUtils.h; CMD_GET_FIRMWARE_VERSION
 // reports this value so a host can tell a stale/wrong sketch apart
 // from a byte-for-byte match without reflashing.
-#define FIRMWARE_VERSION_HASH 0x7AACB3B7UL
+#define FIRMWARE_VERSION_HASH 0xEF7CE3C8UL
