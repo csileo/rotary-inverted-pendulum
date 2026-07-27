@@ -106,10 +106,17 @@ def _teacher_sim_rollouts(
     is insufficient for the student to fit (compounding errors at deploy
     time despite low MSE — classic behavior-cloning covariate shift).
     """
+    # frame_stack must match the teacher's, or its observation_space raises
+    # a shape mismatch (raw obs is 6-dim; a frame_stack=N teacher expects
+    # 6*N). Derived from the teacher itself rather than a separate flag, so
+    # it can never silently drift out of sync with the checkpoint being
+    # distilled.
+    frame_stack = model.observation_space.shape[0] // 6
     env = RotaryInvertedPendulumEnv(
         control_freq_hz=control_freq_hz,
         episode_length_s=8.0,
         domain_randomization=True,
+        frame_stack=frame_stack,
     )
     env.reset(seed=seed)
     obs_list: list[np.ndarray] = []
