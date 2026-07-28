@@ -29,7 +29,9 @@ the launcher itself is plain Python rather than a shell script.
   fault) — no new sensing hardware required.
 - **`run_demo.py`** — orchestrates the above in order, waiting (not
   failing) at each step until its precondition is met, then runs
-  `run_policy.py`.
+  `run_policy.py`. Loops forever (10s pause between cycles by default) so
+  a headless/no-network Pi keeps re-demoing without anyone reconnecting to
+  restart it — Ctrl-C or SIGTERM (`systemctl stop`) is the only way out.
 
 ## Which Nano to talk to
 
@@ -79,3 +81,4 @@ select which Nano to talk to (see above) — only what to run once it's found.
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
+| `PENDULUM_LOOP_DELAY_S` | Pause between demo cycles (default 10s) |

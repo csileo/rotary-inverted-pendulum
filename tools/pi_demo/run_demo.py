@@ -4,14 +4,18 @@ cable in. Waits for the Nano to show up (by USB vid/pid, not a fixed device
 path, so this runs unchanged on Linux, macOS, and Windows — no udev rule,
 no COM-port-vs-/dev-path branching), flashes it only if its firmware
 doesn't already match, waits for 12V motor power to actually be present,
-then runs the reference policy. See README.md in this directory.
+then runs the reference policy — on repeat, forever, so a headless/no-network
+Pi keeps re-demoing without anyone reconnecting to restart it by hand. See
+README.md in this directory.
 
 Usage:
     python run_demo.py
 
 Configuration is via environment variables (all optional — see README.md)
-for the policy/duration to run. Which Nano to talk to is never one of
-them — that only ever comes from usb_config.json (see pi_demo_common.py).
+for the policy/duration/loop-delay to run. Which Nano to talk to is never
+one of them — that only ever comes from usb_config.json (see
+pi_demo_common.py). Ctrl-C (or SIGTERM, e.g. `systemctl stop`) is the only
+way to actually stop the loop.
 """
 
 from __future__ import annotations
@@ -26,14 +30,8 @@ from flash_if_needed import DEFAULT_FQBN, ensure_flashed
 from pi_demo_common import RL_DIR, find_nano_port
 
 
-def main() -> int:
-    policy = os.environ.get(
-        "PENDULUM_POLICY",
-        str(RL_DIR / "models" / "distill_working_balance_h32_dagger" / "student.pt"))
-    frame_stack = os.environ.get("PENDULUM_FRAME_STACK", "3")
-    duration_s = os.environ.get("PENDULUM_DURATION_S", "60")
-    motor_power_timeout_s = float(os.environ.get("PENDULUM_MOTOR_POWER_TIMEOUT_S", "120"))
-
+def run_once(policy: str, frame_stack: str, duration_s: str,
+             motor_power_timeout_s: float) -> int:
     print("[run_demo] Waiting for the Nano...")
     port = find_nano_port()
     print(f"[run_demo] Using port {port}")
@@ -59,6 +57,30 @@ def main() -> int:
         cwd=RL_DIR,
     )
     return result.returncode
+
+
+def main() -> int:
+    policy = os.environ.get(
+        "PENDULUM_POLICY",
+        str(RL_DIR / "models" / "distill_working_balance_h32_dagger" / "student.pt"))
+    frame_stack = os.environ.get("PENDULUM_FRAME_STACK", "3")
+    duration_s = os.environ.get("PENDULUM_DURATION_S", "60")
+    motor_power_timeout_s = float(os.environ.get("PENDULUM_MOTOR_POWER_TIMEOUT_S", "120"))
+    loop_delay_s = float(os.environ.get("PENDULUM_LOOP_DELAY_S", "10"))
+
+    try:
+        while True:
+            try:
+                code = run_once(policy, frame_stack, duration_s, motor_power_timeout_s)
+                status = "ok" if code == 0 else f"exit code {code}"
+            except Exception as exc:  # keep looping no matter what fails
+                status = f"error: {exc}"
+            print(f"[run_demo] Cycle finished ({status}). "
+                  f"Restarting in {loop_delay_s:.0f}s — Ctrl-C to stop.")
+            time.sleep(loop_delay_s)
+    except KeyboardInterrupt:
+        print("[run_demo] Interrupted — stopping.")
+        return 0
 
 
 if __name__ == "__main__":
