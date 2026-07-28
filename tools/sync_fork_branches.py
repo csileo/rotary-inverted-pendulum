@@ -37,8 +37,10 @@ what levels 3/4 are meant to teach), see also README.md's "Branches" table:
 - 4-diy-rl: sysid_params.json + sysid_runbook.md + rig_geometry_parameters.md
   only - no RL/sim code, no URDF, so the colleague has to write their own.
 - demo: just enough to run inference against the real rig with the
-  three reference models (working balance, partial balance, fails to
-  swing up - run_policy.py's actual runtime deps only - NOT
+  three reference SAC teacher models (working balance, partial balance,
+  fails to swing up) plus the DAgger-refreshed distilled student
+  (distill_working_balance_h32_dagger/student.pt - needs distill.py's
+  StudentMLP to load) - run_policy.py's actual runtime deps only - NOT
   async_control.py/real_env.py, which are finetune_async.py-only), plus
   train_sac.py's simulation-only --eval path (pendulum_env.py,
   pendulum_geometry.py, reward.py, sysid_params.json, urdf/model.urdf -
@@ -116,6 +118,9 @@ LEVEL5_FILES = [
     (f"{RL_DIR}/pendulum_env.py", f"{RL_DIR}/pendulum_env.py"),
     (f"{RL_DIR}/pendulum_geometry.py", f"{RL_DIR}/pendulum_geometry.py"),
     (f"{RL_DIR}/reward.py", f"{RL_DIR}/reward.py"),
+    # run_policy.py imports StudentMLP from here whenever --policy is a .pt
+    # (distilled student) rather than a SAC teacher .zip.
+    (f"{RL_DIR}/distill.py", f"{RL_DIR}/distill.py"),
     (
         f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
         f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
@@ -132,6 +137,10 @@ LEVEL5_FILES = [
     (
         f"{RL_DIR}/models/policy_partial_balance.zip",
         f"{RL_DIR}/models/policy_partial_balance.zip",
+    ),
+    (
+        f"{RL_DIR}/models/distill_working_balance_h32_dagger/student.pt",
+        f"{RL_DIR}/models/distill_working_balance_h32_dagger/student.pt",
     ),
     (
         "RotaryInvertedPendulum-arduino/LowLevelServer/LowLevelServer.ino",
