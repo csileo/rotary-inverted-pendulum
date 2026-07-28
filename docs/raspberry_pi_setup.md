@@ -213,9 +213,15 @@ sudo systemctl enable --now pendulum-demo.service
 ```
 
 Replace `<username>` with the username configured in step 2.
-`run_demo.py` blocks until the policy finishes (`--duration-s`),
-Ctrl-C/SIGTERM, or a wait step times out — `Restart=on-failure` cleanly
-restarts the wait cycle if needed (e.g. after the Nano gets unplugged).
+`run_demo.py` itself loops forever — wait for the Nano, flash if needed,
+wait for 12V, run the policy for `--duration-s`, pause, repeat — so once
+the service is up, the demo keeps re-running on its own with no need to
+reconnect (SSH or otherwise) to restart it, e.g. at a booth with no network.
+`Restart=on-failure` is just the outer safety net in case `run_demo.py`
+itself ever crashes outright. The only way to actually stop it is Ctrl-C
+(when run by hand) or `sudo systemctl stop pendulum-demo.service`
+(SIGTERM, when run as the service) — a Nano unplug/replug or a finished
+run just feeds back into the same loop.
 
 Optional environment variables (add under `[Service]` with
 `Environment=`, see `tools/pi_demo/README.md`):
@@ -226,6 +232,7 @@ Optional environment variables (add under `[Service]` with
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
+| `PENDULUM_LOOP_DELAY_S` | Pause between demo cycles (default 10s) |
 
 ## 10. Physical mounting on the rig
 

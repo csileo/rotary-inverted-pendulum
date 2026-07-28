@@ -52,7 +52,9 @@ unattended on boot or on-demand: it waits for the Nano's USB cable and for
 delay someone plugs them in), reflashes the Nano only if its firmware
 doesn't already match, then runs the distilled student
 (`distill_working_balance_h32_dagger/student.pt`) by default — override with
-`PENDULUM_POLICY`, e.g. back to `policy_working_balance.zip`. Pure Python
-(no udev rule, no shell script), so it runs the same way on Linux, macOS,
-and Windows. See `tools/pi_demo/README.md` for setup and the environment
-variables that pick a different policy/duration.
+`PENDULUM_POLICY`, e.g. back to `policy_working_balance.zip`. It then loops
+forever (10s pause between runs), so a headless Pi at a booth with no
+network keeps re-demoing on its own — Ctrl-C or SIGTERM is the only way to
+stop it. Pure Python (no udev rule, no shell script), so it runs the same
+way on Linux, macOS, and Windows. See `tools/pi_demo/README.md` for setup
+and the environment variables that pick a different policy/duration/pause.
