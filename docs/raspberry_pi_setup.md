@@ -222,7 +222,7 @@ Optional environment variables (add under `[Service]` with
 
 | Variable | Meaning |
 |---|---|
-| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load (e.g. `models/distill_working_balance_h32_dagger/student.pt` for the distilled student) |
+| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load. Defaults to `models/distill_working_balance_h32_dagger/student.pt`; set to `models/policy_working_balance.zip` for the full SAC teacher instead |
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |

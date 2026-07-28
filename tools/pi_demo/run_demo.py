@@ -28,7 +28,8 @@ from pi_demo_common import RL_DIR, find_nano_port
 
 def main() -> int:
     policy = os.environ.get(
-        "PENDULUM_POLICY", str(RL_DIR / "models" / "policy_working_balance.zip"))
+        "PENDULUM_POLICY",
+        str(RL_DIR / "models" / "distill_working_balance_h32_dagger" / "student.pt"))
     frame_stack = os.environ.get("PENDULUM_FRAME_STACK", "3")
     duration_s = os.environ.get("PENDULUM_DURATION_S", "60")
     motor_power_timeout_s = float(os.environ.get("PENDULUM_MOTOR_POWER_TIMEOUT_S", "120"))
