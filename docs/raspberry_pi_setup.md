@@ -157,6 +157,21 @@ python run_policy.py --policy models/policy_working_balance.zip \
 on a Pi). If it compiles/flashes and balances, everything is in place;
 move on to automation.
 
+A distilled student MLP is also available as a lighter-weight alternative
+to the SAC teacher `.zip` — same balance quality (upright ≈ 0.987 on a Pi
+3B+, validated 2026-07-28), much smaller and faster to load:
+
+```bash
+python run_policy.py \
+    --policy models/distill_working_balance_h32_dagger/student.pt \
+    --frame-stack 3 --duration-s 30 --port <PORT>
+```
+
+Both checkpoints are inference-only here — `run_policy.py` still runs on
+the Pi itself, not on the Nano; see `models/README.md` for the distinction
+and why an actual on-device (standalone) deployment of the student was not
+pursued.
+
 ## 9. Automate: `tools/pi_demo/run_demo.py`
 
 This is the script that makes the demo tolerant to plug-in order — Pi
@@ -207,7 +222,7 @@ Optional environment variables (add under `[Service]` with
 
 | Variable | Meaning |
 |---|---|
-| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load |
+| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load (e.g. `models/distill_working_balance_h32_dagger/student.pt` for the distilled student) |
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |

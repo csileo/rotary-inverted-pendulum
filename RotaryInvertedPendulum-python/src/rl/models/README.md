@@ -13,3 +13,30 @@ the current best checkpoint.
 
 Superseded checkpoints (previous `policy_working_balance` and `_v4`), with their logs
 and replay buffers, are kept in `experiments/` for reference.
+
+## Distilled student
+
+`distill_working_balance_h32_dagger/student.pt` is not a SAC checkpoint — it's
+a tiny MLP (18 → 32 → 32 → 1, i.e. a 3-frame-stacked observation) distilled
+from `policy_working_balance.zip`, small enough to eventually run standalone
+on the Arduino Nano. It matches the teacher's balance quality (upright ≈
+0.987-0.988 over multi-minute runs, validated 2026-07-28 both tethered to a
+PC and to a Raspberry Pi via `run_policy.py --policy
+models/distill_working_balance_h32_dagger/student.pt --frame-stack 3`) — no
+`--log` capture was saved for those validation runs, so there's no matching
+`logs/*.npz` file the way there is for the SAC checkpoints above.
+
+The directory also ships `dataset.npz`: 301,461 `(obs, action_target)` pairs
+— the original teacher-replay dataset `distill.py` builds, plus a DAgger
+refresh pass (`dagger_relabel.py`) that relabels states the deployed student
+actually visited (including its own near-fall recovery windows) with the
+teacher's action. That dataset, not a hardware log, is what
+`distill.py`/`dagger_relabel.py` need to regenerate `student.pt` from
+scratch.
+
+This student is validated tethered only (`run_policy.py` doing inference on
+a PC or Raspberry Pi, talking to the Nano over serial as a dumb sensor/motor
+server) — not a standalone on-device deployment. `docs/quantisation.md`
+covers int8 quantisation for an earlier, non-frame-stacked student
+architecture; it predates this DAgger-refreshed, frame-stacked one and
+isn't a guide to this checkpoint's on-device prospects.
