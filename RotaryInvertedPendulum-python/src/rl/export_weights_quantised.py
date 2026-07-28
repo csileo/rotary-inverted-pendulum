@@ -1,31 +1,48 @@
 """Export a QAT-trained student MLP as a PROGMEM C header for the Arduino Nano.
 
 Reads the .pt produced by `distill_quantised.py` and writes a self-contained
-header at `RotaryInvertedPendulum-arduino/RLControl/policy_weights_quantised.h`.
+header (`policy_weights_quantised.h` for --bits 8, or a differently-named
+int16-storage header for --bits 9-16 — see RLControl.ino's
+POLICY_QUANTISED_INT8 / POLICY_QUANTISED_INT16 switch).
 
 Quantisation scheme (matches `distill_quantised.py` and the C++ forward pass):
 
-    Per-tensor symmetric int8, no zero point.
-        quantise(x, s)   = clamp(round(x / s), -127, 127)
+    Per-tensor symmetric, no zero point. bits=8 -> int8 [-127,127];
+    bits=9..16 -> stored as int16_t but logically clamped to
+    [-(2**(bits-1)-1), 2**(bits-1)-1] (see distill_quantised.py's --bits
+    docstring for why a narrower-than-16 logical range can still be the
+    right call here).
+        quantise(x, s)   = clamp(round(x / s), -max_int, max_int)
         dequantise(q, s) = q * s
 
     Per-layer Linear:
         y = W @ x + b           (float math we replace)
         becomes
-        accum_i32 = sum( W_int8[i,j] * x_int8[j] ) + b_int32[i]
-                                   ^ both signed int8, accumulate in int32
+        accum_i32 = sum( W_int[i,j] * x_int[j] ) + b_int32[i]
+                                   ^ accumulate in int32
                                    ^ b_int32 pre-scaled to (s_w * s_x) units
         Then:
-            For hidden layers: rescale accum_i32 to int8 next-layer input
-                               using a fixed-point multiply-shift.
+            For hidden layers: rescale accum_i32 to the next layer's int
+                               range using a fixed-point multiply-shift.
             For the final layer: dequantise accum_i32 to float, apply tanh.
 
-    Rescale (hidden layers):
-        We want   y_i8 = clamp(round(accum_i32 * (s_w * s_x / s_y)), -127, 127)
-        Implement (s_w * s_x / s_y) as int16 / 2^15:
-            M_q15 = round((s_w * s_x / s_y) * 32768)
-            y_i8  = clamp(((accum_i32 * M_q15) + (1<<14)) >> 15, -127, 127)
-        Then ReLU is just clamp(y_i8, 0, 127).
+    Rescale (hidden layers) — PER-LAYER ADAPTIVE SHIFT, not a fixed Q15:
+        We want   y_int = clamp(round(accum_i32 * (s_w * s_x / s_y)), 0, max_int)
+        Implement (s_w * s_x / s_y) as M_q / 2^shift:
+            M_q   = round((s_w * s_x / s_y) * 2^shift)
+            y_int = clamp(((accum_i32 * M_q) + (1<<(shift-1))) >> shift, 0, max_int)
+        `shift` is chosen per layer (see calibrate_rescale()) to be the
+        LARGEST value that keeps M_q inside int16 AND accum_i32 * M_q inside
+        int32 (checked empirically against real on-distribution data, with
+        margin) — NOT hardcoded to 15. A fixed shift=15 was fine for int8
+        (M_q naturally landed in the tens-to-hundreds range there) but
+        collapses to a handful of representable multiplier values at
+        bits=14/16, because layer 1's "absorb the per-channel input scale
+        into the weights" trick (_absorb_per_channel_input_scales) makes
+        that layer's s_w/s_h ratio shrink roughly as 1/max_int^2 instead of
+        1/max_int as bits grows — a fixed Q15 rescale silently loses almost
+        all of layer 1's dynamic range there (some neurons' M_q rounds to
+        0, i.e. that neuron reads as a constant regardless of input).
 
     Final dequantise:
         y_float = accum_i32 * (s_w * s_h2)         # one float multiply
@@ -36,15 +53,16 @@ Bias quantisation:
         Lives in the same units as `accum` so it adds directly without
         further rescaling.
 
-Header schema (matches what `RLControl.ino` consumes when POLICY_QUANTISED
-is defined):
+Header schema (matches what `RLControl.ino` consumes under
+POLICY_QUANTISED_INT8 / POLICY_QUANTISED_INT16):
 
-    POLICY_OBS_DIM, POLICY_HIDDEN_DIM, POLICY_OUT_DIM
+    POLICY_WEIGHT_BITS, POLICY_OBS_DIM, POLICY_HIDDEN_DIM, POLICY_OUT_DIM
+    POLICY_RESCALE_SHIFT_L1, POLICY_RESCALE_SHIFT_L2   (#define, per layer)
     POLICY_INV_SCALE_OBS_IN  (float, = 1 / s_obs_in; multiply obs by this)
-    POLICY_W1[H][O], POLICY_W2[H][H], POLICY_W3[1][H]   (int8)
+    POLICY_W1[H][O], POLICY_W2[H][H], POLICY_W3[1][H]   (int8_t or int16_t)
     POLICY_B1[H], POLICY_B2[H], POLICY_B3[1]             (int32)
-    POLICY_M_Q15_L1, POLICY_M_Q15_L2                      (int16, rescale)
-    POLICY_DEQUANT_L3                                     (float)
+    POLICY_RESCALE_M_L1, POLICY_RESCALE_M_L2             (int16, per row)
+    POLICY_DEQUANT_L3                                    (float)
 """
 
 from __future__ import annotations
@@ -60,16 +78,20 @@ import torch
 from distill_quantised import QATStudent
 
 
-def _quantise_weight_per_row(w_float: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Per-output-channel symmetric int8: each row of W gets its own scale.
+def _quantise_weight_per_row(w_float: np.ndarray, bits: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    """Per-output-channel symmetric quantisation: each row of W gets its own scale.
 
-    Returns (W_int8 of shape (out, in), s_w of shape (out,)). The canonical
+    Returns (W_int of shape (out, in), s_w of shape (out,)). The canonical
     TFLite-Micro pattern; recovers a lot of fidelity over per-tensor scaling
     when different output neurons have different weight magnitudes.
+    bits=8 -> int8 [-127,127]; bits=9..16 -> int16_t storage, logical range
+    [-(2**(bits-1)-1), 2**(bits-1)-1].
     """
+    max_int = 2 ** (bits - 1) - 1
+    dtype = np.int8 if bits == 8 else np.int16
     max_abs_per_row = np.max(np.abs(w_float), axis=1)  # (out,)
-    s_w = np.maximum(max_abs_per_row / 127.0, 1e-8).astype(np.float64)  # (out,)
-    w_int = np.clip(np.round(w_float / s_w[:, None]), -127, 127).astype(np.int8)
+    s_w = np.maximum(max_abs_per_row / max_int, 1e-8).astype(np.float64)  # (out,)
+    w_int = np.clip(np.round(w_float / s_w[:, None]), -max_int, max_int).astype(dtype)
     return w_int, s_w
 
 
@@ -91,10 +113,10 @@ def _absorb_per_channel_input_scales(w_float: np.ndarray,
                                      s_obs_per_channel: np.ndarray) -> np.ndarray:
     """Fold per-channel input scales into weights: W_eff[i,j] = W[i,j] * s_obs[j].
 
-    After this, W_eff can be quantised per row to int8 and the deployment
-    matmul does sum_j (W_eff_int[i,j] * x_int[j]), where x_int[j] = round(x[j]
+    After this, W_eff can be quantised per row and the deployment matmul
+    does sum_j (W_eff_int[i,j] * x_int[j]), where x_int[j] = round(x[j]
     / s_obs[j]) — i.e. the per-channel input scales are already inside the
-    weights. The Arduino still does an ordinary int8 matmul.
+    weights. The Arduino still does an ordinary int matmul.
     """
     return w_float * s_obs_per_channel[None, :]  # broadcast over rows
 
@@ -104,6 +126,16 @@ def _format_int8_2d(name: str, arr: np.ndarray) -> str:
     lines = [f"const int8_t {name}[{rows}][{cols}] PROGMEM = {{"]
     for r in range(rows):
         vals = ", ".join(f"{int(v):4d}" for v in arr[r])
+        lines.append(f"    {{ {vals} }}{',' if r < rows - 1 else ''}")
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _format_int16_2d(name: str, arr: np.ndarray) -> str:
+    rows, cols = arr.shape
+    lines = [f"const int16_t {name}[{rows}][{cols}] PROGMEM = {{"]
+    for r in range(rows):
+        vals = ", ".join(f"{int(v):6d}" for v in arr[r])
         lines.append(f"    {{ {vals} }}{',' if r < rows - 1 else ''}")
     lines.append("};")
     return "\n".join(lines)
@@ -127,18 +159,177 @@ def _format_float_1d(name: str, arr: np.ndarray) -> str:
     return f"const float {name}[{n}] PROGMEM = {{\n    {vals}\n}};"
 
 
-def export(student_path: Path, header_path: Path, *, source_name: str | None = None) -> dict:
-    ckpt = torch.load(str(student_path), map_location="cpu", weights_only=True)
-    hidden = int(ckpt["hidden"])
-    obs_dim = int(ckpt["obs_dim"])
-    act_dim = int(ckpt["act_dim"])
-    val_mse = float(ckpt.get("val_mse", float("nan")))
+# ---------------------------------------------------------------------------
+# Rescale calibration — per-layer adaptive Q-shift (see module docstring).
+# ---------------------------------------------------------------------------
 
-    model = QATStudent(hidden=hidden, obs_dim=obs_dim, act_dim=act_dim)
-    model.load_state_dict(ckpt["state_dict"])
-    sd = model.state_dict()
+def _pick_shift(M_row: np.ndarray, accum_samples: np.ndarray, *,
+                headroom: float = 0.8, max_shift: int = 24) -> tuple[np.ndarray, int]:
+    """Choose one right-shift S for a layer plus per-row Q_S multipliers
+    M_q[i] = round(M_row[i] * 2**S) — the largest S (best precision) such
+    that, against the REAL accumulator values actually seen:
+      - M_q fits in int16 (the Arduino stores it as int16_t regardless of
+        the weight bit-width).
+      - accum * M_q fits within `headroom` of int32 range.
+    `accum_samples` must already reflect the actual (sample, row) pairs at
+    THIS layer — the empirical bound this function enforces would be
+    meaningless against a synthetic/worst-case accumulator estimate.
+    """
+    max_abs_M = float(np.max(np.abs(M_row)))
+    max_abs_accum = float(np.max(np.abs(accum_samples)))
+    int16_max = 32767
+    int32_budget = headroom * (2 ** 31 - 1)
 
-    # Float weights
+    shift = max_shift
+    while shift > 0 and (
+        max_abs_M * (2 ** shift) > int16_max
+        or max_abs_accum * max_abs_M * (2 ** shift) > int32_budget
+    ):
+        shift -= 1
+
+    if max_abs_accum * max_abs_M * (2 ** shift) > int32_budget:
+        raise RuntimeError(
+            f"cannot find a safe Q-shift even at shift=0: max|accum|={max_abs_accum:.3e} "
+            f"x max|M|={max_abs_M:.3e} exceeds the int32 headroom budget "
+            f"({headroom*100:.0f}% of {2**31-1:.3e}). The raw (pre-rescale) "
+            f"accumulator itself is too large — reduce --bits."
+        )
+
+    M_q = np.round(M_row * (2 ** shift)).astype(np.int64)
+    if np.any(np.abs(M_q) > int16_max):
+        raise RuntimeError(
+            f"Q-multiplier overflows int16 even at shift={shift}: "
+            f"range [{M_q.min()}, {M_q.max()}]"
+        )
+    return M_q.astype(np.int16), shift
+
+
+def calibrate_rescale(
+    check_obs: np.ndarray,
+    *,
+    W1q: np.ndarray, B1q: np.ndarray, s_w1: np.ndarray, s_h1: float,
+    W2q: np.ndarray, B2q: np.ndarray, s_w2: np.ndarray, s_h2: float,
+    W3q: np.ndarray, B3q: np.ndarray,
+    inv_scale_obs: np.ndarray, max_int: int,
+    headroom: float = 0.8,
+) -> dict:
+    """Calibrate the per-layer fixed-point rescale against real on-distribution obs.
+
+    Strictly sequential, not circular: layer 2's raw accumulator depends on
+    layer 1's *actual* quantised output, which depends on layer 1's chosen
+    shift — so layer 1 is fully resolved (shift + real h1 values) before
+    layer 2's calibration ever runs. Layer 3 dequantises straight to float
+    (no Q-format), so it only needs an accumulator-range check, not a shift.
+    """
+    x = np.round(check_obs.astype(np.float64) * inv_scale_obs[None, :].astype(np.float64))
+    x = np.clip(x, -max_int, max_int).astype(np.int64)
+
+    accum_l1 = B1q[None, :].astype(np.int64) + x @ W1q.T.astype(np.int64)
+    M_l1 = s_w1 / s_h1
+    M_q_l1, shift_l1 = _pick_shift(M_l1, accum_l1, headroom=headroom)
+    round_l1 = (1 << (shift_l1 - 1)) if shift_l1 > 0 else 0
+    h1 = np.clip((accum_l1 * M_q_l1[None, :].astype(np.int64) + round_l1) >> shift_l1,
+                 0, max_int)
+
+    accum_l2 = B2q[None, :].astype(np.int64) + h1 @ W2q.T.astype(np.int64)
+    M_l2 = (s_w2 * s_h1) / s_h2
+    M_q_l2, shift_l2 = _pick_shift(M_l2, accum_l2, headroom=headroom)
+    round_l2 = (1 << (shift_l2 - 1)) if shift_l2 > 0 else 0
+    h2 = np.clip((accum_l2 * M_q_l2[None, :].astype(np.int64) + round_l2) >> shift_l2,
+                 0, max_int)
+
+    accum_l3 = B3q[None, :].astype(np.int64) + h2 @ W3q.T.astype(np.int64)
+
+    int32_max = 2 ** 31 - 1
+    max_abs = {
+        "l1": int(np.max(np.abs(accum_l1))),
+        "l2": int(np.max(np.abs(accum_l2))),
+        "l3": int(np.max(np.abs(accum_l3))),
+    }
+    return {
+        "M_q_l1": M_q_l1, "shift_l1": shift_l1,
+        "M_q_l2": M_q_l2, "shift_l2": shift_l2,
+        "max_abs_accum": max_abs,
+        "headroom": 1.0 - max(max_abs.values()) / int32_max,
+    }
+
+
+def numpy_forward_quantised(
+    obs: np.ndarray,
+    *,
+    W1: np.ndarray, B1: np.ndarray,
+    W2: np.ndarray, B2: np.ndarray,
+    W3: np.ndarray, B3: np.ndarray,
+    inv_scale_obs: np.ndarray,   # per-channel, shape (obs_dim,)
+    M_q_l1: np.ndarray, shift_l1: int,   # per output channel, shape (H,)
+    M_q_l2: np.ndarray, shift_l2: int,   # per output channel, shape (H,)
+    dequant_l3: np.ndarray,      # per output channel, shape (act_dim,)
+    max_int: int = 127,
+    diag: dict | None = None,
+) -> np.ndarray:
+    """Numpy implementation that mirrors the Arduino quantised forward pass exactly.
+
+    Single-sample input. Returns the float action (post-tanh). Used both for
+    parity-checking the export and as a reference for the C++. `max_int` is
+    127 for int8, up to 32767 for int16-storage. `shift_l1`/`shift_l2` come
+    from calibrate_rescale() — NOT a fixed 15 (see module docstring).
+    """
+    obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+
+    x = np.empty(obs.shape[0], dtype=np.int32)
+    for j in range(obs.shape[0]):
+        q = int(round(obs[j] * inv_scale_obs[j]))
+        if q >  max_int: q =  max_int
+        if q < -max_int: q = -max_int
+        x[j] = q
+
+    round_l1 = (1 << (shift_l1 - 1)) if shift_l1 > 0 else 0
+    H = W1.shape[0]
+    h1 = np.zeros(H, dtype=np.int32)
+    max_abs_accum_l1 = 0
+    for i in range(H):
+        accum = int(B1[i])
+        for j in range(W1.shape[1]):
+            accum += int(W1[i, j]) * int(x[j])
+        max_abs_accum_l1 = max(max_abs_accum_l1, abs(accum))
+        scaled = (accum * int(M_q_l1[i]) + round_l1) >> shift_l1
+        if scaled > max_int: scaled = max_int
+        if scaled < 0:       scaled = 0       # ReLU
+        h1[i] = scaled
+
+    round_l2 = (1 << (shift_l2 - 1)) if shift_l2 > 0 else 0
+    h2 = np.zeros(H, dtype=np.int32)
+    max_abs_accum_l2 = 0
+    for i in range(H):
+        accum = int(B2[i])
+        for j in range(W2.shape[1]):
+            accum += int(W2[i, j]) * int(h1[j])
+        max_abs_accum_l2 = max(max_abs_accum_l2, abs(accum))
+        scaled = (accum * int(M_q_l2[i]) + round_l2) >> shift_l2
+        if scaled > max_int: scaled = max_int
+        if scaled < 0:       scaled = 0
+        h2[i] = scaled
+
+    accum = int(B3[0])
+    for j in range(W3.shape[1]):
+        accum += int(W3[0, j]) * int(h2[j])
+    max_abs_accum_l3 = abs(accum)
+    y = float(accum) * float(dequant_l3[0])
+
+    if diag is not None:
+        diag["max_abs_accum_l1"] = max(diag.get("max_abs_accum_l1", 0), max_abs_accum_l1)
+        diag["max_abs_accum_l2"] = max(diag.get("max_abs_accum_l2", 0), max_abs_accum_l2)
+        diag["max_abs_accum_l3"] = max(diag.get("max_abs_accum_l3", 0), max_abs_accum_l3)
+
+    return np.float32(np.tanh(y))
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+
+def _quantise_all(sd: dict, s_obs_pc: np.ndarray, s_h1: float, s_h2: float, bits: int) -> dict:
+    """Shared by export() and parity_check() so both quantise identically."""
     W1f = sd["fc1.weight"].cpu().numpy().astype(np.float32)  # (H, O)
     B1f = sd["fc1.bias"].cpu().numpy().astype(np.float32)
     W2f = sd["fc2.weight"].cpu().numpy().astype(np.float32)  # (H, H)
@@ -146,69 +337,93 @@ def export(student_path: Path, header_path: Path, *, source_name: str | None = N
     W3f = sd["fc3.weight"].cpu().numpy().astype(np.float32)  # (1, H)
     B3f = sd["fc3.bias"].cpu().numpy().astype(np.float32)
 
-    # Activation scales (frozen EMA from training).
-    # obs_in is per-channel (saved as a Python list); h1/h2 are per-tensor.
+    W1_eff = _absorb_per_channel_input_scales(W1f, s_obs_pc.astype(np.float32))
+    W1q, s_w1 = _quantise_weight_per_row(W1_eff, bits=bits)
+    B1q, _ = _quantise_bias_int32_per_row(B1f, s_w1, s_x=1.0)
+
+    W2q, s_w2 = _quantise_weight_per_row(W2f, bits=bits)
+    B2q, _ = _quantise_bias_int32_per_row(B2f, s_w2, s_x=s_h1)
+    W3q, s_w3 = _quantise_weight_per_row(W3f, bits=bits)
+    B3q, _ = _quantise_bias_int32_per_row(B3f, s_w3, s_x=s_h2)
+
+    dequant_l3 = (s_w3 * s_h2).astype(np.float32)
+    inv_scale_obs = (1.0 / np.maximum(s_obs_pc, 1e-12)).astype(np.float32)
+
+    return dict(W1q=W1q, B1q=B1q, s_w1=s_w1, W2q=W2q, B2q=B2q, s_w2=s_w2,
+                W3q=W3q, B3q=B3q, s_w3=s_w3, dequant_l3=dequant_l3,
+                inv_scale_obs=inv_scale_obs)
+
+
+def export(student_path: Path, header_path: Path, *, source_name: str | None = None,
+           calib_dataset: Path | None = None) -> dict:
+    ckpt = torch.load(str(student_path), map_location="cpu", weights_only=True)
+    hidden = int(ckpt["hidden"])
+    obs_dim = int(ckpt["obs_dim"])
+    act_dim = int(ckpt["act_dim"])
+    bits = int(ckpt.get("bits", 8))
+    max_int = 2 ** (bits - 1) - 1
+    val_mse = float(ckpt.get("val_mse", float("nan")))
+
+    model = QATStudent(hidden=hidden, obs_dim=obs_dim, act_dim=act_dim, bits=bits)
+    model.load_state_dict(ckpt["state_dict"])
+    sd = model.state_dict()
+
     s_obs_pc = np.asarray(ckpt["scales"]["obs_in"], dtype=np.float64)  # (obs_dim,)
     s_h1 = float(ckpt["scales"]["h1"])
     s_h2 = float(ckpt["scales"]["h2"])
 
-    # Layer 1: absorb per-channel input scales into the weights, then per-row
-    # quantise. After absorption, each weight column j gets scaled by s_obs[j],
-    # so different columns have different effective magnitudes — that's exactly
-    # what per-row quantisation handles well.
-    W1_eff = _absorb_per_channel_input_scales(W1f, s_obs_pc.astype(np.float32))
-    W1q, s_w1 = _quantise_weight_per_row(W1_eff)
-    # Bias for L1 lives in units of s_w1[i] (the per-row weight scale of the
-    # ABSORBED weights — s_obs is already in there). So bias scale s_b1[i] = s_w1[i].
-    B1q, _ = _quantise_bias_int32_per_row(B1f, s_w1, s_x=1.0)
+    q = _quantise_all(sd, s_obs_pc, s_h1, s_h2, bits)
 
-    # Layers 2 and 3: per-row weights, per-tensor input. Standard.
-    W2q, s_w2 = _quantise_weight_per_row(W2f)
-    B2q, _ = _quantise_bias_int32_per_row(B2f, s_w2, s_x=s_h1)
-    W3q, s_w3 = _quantise_weight_per_row(W3f)
-    B3q, _ = _quantise_bias_int32_per_row(B3f, s_w3, s_x=s_h2)
-
-    # Per-row rescale factors. M[i] = s_w[i] * s_input / s_output.
-    # Layer 1: s_input was absorbed into s_w, so M[i] = s_w1[i] / s_h1.
-    M_l1 = s_w1 / s_h1                 # (H,)
-    M_l2 = (s_w2 * s_h1) / s_h2        # (H,)
-    M_q15_l1 = np.round(M_l1 * 32768).astype(np.int64)
-    M_q15_l2 = np.round(M_l2 * 32768).astype(np.int64)
-    if (M_q15_l1.max() > 32767 or M_q15_l1.min() < -32768
-            or M_q15_l2.max() > 32767 or M_q15_l2.min() < -32768):
+    if calib_dataset is None or not calib_dataset.exists():
         raise RuntimeError(
-            f"per-row Q15 rescale overflow:\n"
-            f"  M1_q15 range [{M_q15_l1.min()}, {M_q15_l1.max()}]\n"
-            f"  M2_q15 range [{M_q15_l2.min()}, {M_q15_l2.max()}]\n"
-            f"Some weight rows are too large relative to activation scales."
+            "export() requires --parity-dataset as the rescale-calibration "
+            "sample — the per-layer Q-shift is picked against real "
+            "accumulator values, not a theoretical worst case (see "
+            "calibrate_rescale())."
         )
-    M_q15_l1 = M_q15_l1.astype(np.int16)
-    M_q15_l2 = M_q15_l2.astype(np.int16)
+    data = np.load(calib_dataset)
+    all_obs = np.asarray(data["obs"], dtype=np.float32)
+    rng = np.random.default_rng(0)
+    idx = rng.choice(all_obs.shape[0], size=min(8192, all_obs.shape[0]), replace=False)
+    calib_obs = all_obs[idx]
 
-    # Layer 3 dequantise-to-float: float scale per output (only 1 output here).
-    # y_float[i] = accum_int[i] * s_w3[i] * s_h2 + b[i]_dequant
-    # Bias for L3 was already incorporated into accum, so:
-    #   y_float[i] = accum_with_bias[i] * (s_w3[i] * s_h2)
-    dequant_l3 = (s_w3 * s_h2).astype(np.float32)  # (act_dim,)
+    calib = calibrate_rescale(
+        calib_obs, W1q=q["W1q"], B1q=q["B1q"], s_w1=q["s_w1"], s_h1=s_h1,
+        W2q=q["W2q"], B2q=q["B2q"], s_w2=q["s_w2"], s_h2=s_h2,
+        W3q=q["W3q"], B3q=q["B3q"], inv_scale_obs=q["inv_scale_obs"], max_int=max_int,
+    )
+    print(f"[export] rescale calibration ({calib_obs.shape[0]} samples): "
+          f"shift_l1={calib['shift_l1']} (M range [{calib['M_q_l1'].min()},{calib['M_q_l1'].max()}])  "
+          f"shift_l2={calib['shift_l2']} (M range [{calib['M_q_l2'].min()},{calib['M_q_l2'].max()}])  "
+          f"max|accum| L1={calib['max_abs_accum']['l1']:.3e} L2={calib['max_abs_accum']['l2']:.3e} "
+          f"L3={calib['max_abs_accum']['l3']:.3e}  headroom={calib['headroom']*100:.1f}%")
 
-    # Input quantisation: x_int8[j] = clamp(round(obs[j] * inv_scale_obs[j]), -127, 127).
-    # Per-channel inverse scale array.
-    inv_scale_obs = (1.0 / np.maximum(s_obs_pc, 1e-12)).astype(np.float32)  # (obs_dim,)
+    W1q, B1q, s_w1 = q["W1q"], q["B1q"], q["s_w1"]
+    W2q, B2q, s_w2 = q["W2q"], q["B2q"], q["s_w2"]
+    W3q, B3q, s_w3 = q["W3q"], q["B3q"], q["s_w3"]
+    dequant_l3, inv_scale_obs = q["dequant_l3"], q["inv_scale_obs"]
+    M_q_l1, shift_l1 = calib["M_q_l1"], calib["shift_l1"]
+    M_q_l2, shift_l2 = calib["M_q_l2"], calib["shift_l2"]
 
-    n_params_int8 = W1q.size + W2q.size + W3q.size
+    bytes_per_weight = 1 if bits == 8 else 2
+    weight_ctype = "int8_t" if bits == 8 else "int16_t"
+    format_weight_2d = _format_int8_2d if bits == 8 else _format_int16_2d
+
+    n_params_w = W1q.size + W2q.size + W3q.size
     n_params_int32 = B1q.size + B2q.size + B3q.size
-    n_params_int16 = M_q15_l1.size + M_q15_l2.size
+    n_params_int16 = M_q_l1.size + M_q_l2.size
     n_params_float = inv_scale_obs.size + dequant_l3.size
-    flash_bytes = n_params_int8 + 4 * n_params_int32 + 2 * n_params_int16 + 4 * n_params_float
+    flash_bytes = (bytes_per_weight * n_params_w + 4 * n_params_int32
+                   + 2 * n_params_int16 + 4 * n_params_float)
 
     h = []
     h.append("// auto-generated by export_weights_quantised.py — do not edit by hand")
     if source_name:
         h.append(f"// source: {source_name}")
     h.append(f"// generated: {dt.datetime.now().isoformat(timespec='seconds')}")
-    h.append(f"// quantised student MLP: {obs_dim} -> {hidden} -> {hidden} -> {act_dim} (int8)")
-    h.append(f"// per-channel input + per-row weight quantisation")
-    h.append(f"// weights+biases: {n_params_int8} int8 + {n_params_int32} int32 + "
+    h.append(f"// quantised student MLP: {obs_dim} -> {hidden} -> {hidden} -> {act_dim} (int{bits})")
+    h.append(f"// per-channel input + per-row weight quantisation, per-layer adaptive Q-shift rescale")
+    h.append(f"// weights+biases: {n_params_w} {weight_ctype} + {n_params_int32} int32 + "
              f"{n_params_int16} int16 + {n_params_float} float = {flash_bytes} flash bytes")
     h.append(f"// QAT val_mse: {val_mse:.6f}")
     obs_scale_strs = ', '.join(f'{float(s):.4e}' for s in s_obs_pc)
@@ -217,149 +432,85 @@ def export(student_path: Path, header_path: Path, *, source_name: str | None = N
     h.append(f"// per-row weight scales L1: range [{s_w1.min():.3e}, {s_w1.max():.3e}]")
     h.append(f"// per-row weight scales L2: range [{s_w2.min():.3e}, {s_w2.max():.3e}]")
     h.append(f"// per-row weight scale  L3: {float(s_w3[0]):.6e}")
-    h.append(f"// rescale Q15: L1 range [{int(M_q15_l1.min())}, {int(M_q15_l1.max())}]  "
-             f"L2 range [{int(M_q15_l2.min())}, {int(M_q15_l2.max())}]")
+    h.append(f"// rescale: shift_l1={shift_l1} M range [{int(M_q_l1.min())}, {int(M_q_l1.max())}]  "
+             f"shift_l2={shift_l2} M range [{int(M_q_l2.min())}, {int(M_q_l2.max())}]")
+    h.append(f"// calibration headroom vs int32: {calib['headroom']*100:.1f}% "
+             f"({calib_obs.shape[0]} samples from {calib_dataset.name})")
     h.append("#pragma once")
     h.append("#include <avr/pgmspace.h>")
     h.append("#include <stdint.h>")
     h.append("")
-    h.append(f"#define POLICY_OBS_DIM     {obs_dim}")
-    h.append(f"#define POLICY_HIDDEN_DIM  {hidden}")
-    h.append(f"#define POLICY_OUT_DIM     {act_dim}")
+    h.append(f"#define POLICY_WEIGHT_BITS      {bits}")
+    h.append(f"#define POLICY_OBS_DIM          {obs_dim}")
+    h.append(f"#define POLICY_HIDDEN_DIM       {hidden}")
+    h.append(f"#define POLICY_OUT_DIM          {act_dim}")
+    h.append(f"#define POLICY_RESCALE_SHIFT_L1 {shift_l1}")
+    h.append(f"#define POLICY_RESCALE_SHIFT_L2 {shift_l2}")
     h.append("")
     h.append(_format_float_1d("POLICY_INV_SCALE_OBS_IN", inv_scale_obs))
-    h.append(_format_int16_1d("POLICY_M_Q15_L1", M_q15_l1))   # per output channel
-    h.append(_format_int16_1d("POLICY_M_Q15_L2", M_q15_l2))
+    h.append(_format_int16_1d("POLICY_RESCALE_M_L1", M_q_l1))   # per output channel
+    h.append(_format_int16_1d("POLICY_RESCALE_M_L2", M_q_l2))
     h.append(_format_float_1d("POLICY_DEQUANT_L3", dequant_l3))
     h.append("")
-    h.append(_format_int8_2d("POLICY_W1", W1q))
+    h.append(format_weight_2d("POLICY_W1", W1q))
     h.append(_format_int32_1d("POLICY_B1", B1q))
-    h.append(_format_int8_2d("POLICY_W2", W2q))
+    h.append(format_weight_2d("POLICY_W2", W2q))
     h.append(_format_int32_1d("POLICY_B2", B2q))
-    h.append(_format_int8_2d("POLICY_W3", W3q))
+    h.append(format_weight_2d("POLICY_W3", W3q))
     h.append(_format_int32_1d("POLICY_B3", B3q))
     h.append("")
 
     header_path.parent.mkdir(parents=True, exist_ok=True)
     header_path.write_text("\n".join(h))
     print(f"wrote {header_path}")
-    print(f"  {obs_dim}->{hidden}->{hidden}->{act_dim} int8, "
+    print(f"  {obs_dim}->{hidden}->{hidden}->{act_dim} int{bits}, "
           f"{flash_bytes} flash bytes, val_mse={val_mse:.6f}")
     return {
-        "hidden": hidden,
-        "obs_dim": obs_dim,
-        "act_dim": act_dim,
-        "flash_bytes": flash_bytes,
-        "val_mse": val_mse,
+        "hidden": hidden, "obs_dim": obs_dim, "act_dim": act_dim, "bits": bits,
+        "flash_bytes": flash_bytes, "val_mse": val_mse,
+        "M_q_l1": M_q_l1, "shift_l1": shift_l1,
+        "M_q_l2": M_q_l2, "shift_l2": shift_l2,
+        "W1q": W1q, "B1q": B1q, "W2q": W2q, "B2q": B2q, "W3q": W3q, "B3q": B3q,
+        "dequant_l3": dequant_l3, "inv_scale_obs": inv_scale_obs, "max_int": max_int,
     }
 
 
-def numpy_forward_int8(
-    obs: np.ndarray,
-    *,
-    W1: np.ndarray, B1: np.ndarray,
-    W2: np.ndarray, B2: np.ndarray,
-    W3: np.ndarray, B3: np.ndarray,
-    inv_scale_obs: np.ndarray,   # per-channel, shape (obs_dim,)
-    M_q15_l1: np.ndarray,        # per output channel, shape (H,)
-    M_q15_l2: np.ndarray,        # per output channel, shape (H,)
-    dequant_l3: np.ndarray,      # per output channel, shape (act_dim,)
-) -> np.ndarray:
-    """Numpy implementation that mirrors the Arduino int8 forward pass exactly.
-
-    Single-sample input. Returns the float action (post-tanh).
-    Used both for parity-checking the export and as a reference for the C++.
-    """
-    obs = np.asarray(obs, dtype=np.float32).reshape(-1)
-
-    # Per-channel input quantisation: each obs dim has its own scale.
-    x = np.empty(obs.shape[0], dtype=np.int32)
-    for j in range(obs.shape[0]):
-        q = int(round(obs[j] * inv_scale_obs[j]))
-        if q >  127: q =  127
-        if q < -127: q = -127
-        x[j] = q
-
-    # Layer 1: int8 matmul + bias + per-row Q15 rescale + ReLU.
-    H = W1.shape[0]
-    h1 = np.zeros(H, dtype=np.int32)
-    for i in range(H):
-        accum = int(B1[i])
-        for j in range(W1.shape[1]):
-            accum += int(W1[i, j]) * int(x[j])
-        scaled = (accum * int(M_q15_l1[i]) + (1 << 14)) >> 15
-        if scaled > 127: scaled = 127
-        if scaled < 0:   scaled = 0           # ReLU
-        h1[i] = scaled
-
-    # Layer 2: same pattern.
-    h2 = np.zeros(H, dtype=np.int32)
-    for i in range(H):
-        accum = int(B2[i])
-        for j in range(W2.shape[1]):
-            accum += int(W2[i, j]) * int(h1[j])
-        scaled = (accum * int(M_q15_l2[i]) + (1 << 14)) >> 15
-        if scaled > 127: scaled = 127
-        if scaled < 0:   scaled = 0
-        h2[i] = scaled
-
-    # Layer 3 → dequantise per output → tanh.
-    accum = int(B3[0])
-    for j in range(W3.shape[1]):
-        accum += int(W3[0, j]) * int(h2[j])
-    y = float(accum) * float(dequant_l3[0])
-    return np.float32(np.tanh(y))
-
-
 def parity_check(student_path: Path, n_samples: int = 1000, seed: int = 0,
-                 dataset_path: Path | None = None) -> dict:
-    """Compare the numpy int8 forward pass against the QAT PyTorch model.
+                 dataset_path: Path | None = None, rescale: dict | None = None) -> dict:
+    """Compare the numpy quantised forward pass against the QAT PyTorch model.
 
-    Tolerance is loose (~1-2 LSB on the action) because the Q15 fixed-point
+    `rescale`: pass the dict `export()` returned to validate the EXACT
+    header just written (recommended — see main()). If omitted, this
+    recomputes its own calibration independently, which is only meaningful
+    as a standalone sanity check and may pick a different (also valid, but
+    not necessarily identical) shift if run against a different sample of
+    `dataset_path` than export() used.
+
+    Tolerance is loose (~1-2 LSB on the action) because the fixed-point
     rescale rounds slightly differently from PyTorch's float scale * round.
     Bit-exactness against PyTorch isn't possible after the rescale step;
     bit-exactness against the *Arduino* C++ is guaranteed (both use int32
     arithmetic with the same rounding rule).
     """
     ckpt = torch.load(str(student_path), map_location="cpu", weights_only=True)
+    bits = int(ckpt.get("bits", 8))
+    max_int = 2 ** (bits - 1) - 1
     model = QATStudent(
         hidden=int(ckpt["hidden"]),
         obs_dim=int(ckpt["obs_dim"]),
         act_dim=int(ckpt["act_dim"]),
+        bits=bits,
     )
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     sd = model.state_dict()
 
-    W1f = sd["fc1.weight"].cpu().numpy().astype(np.float32)
-    B1f = sd["fc1.bias"].cpu().numpy().astype(np.float32)
-    W2f = sd["fc2.weight"].cpu().numpy().astype(np.float32)
-    B2f = sd["fc2.bias"].cpu().numpy().astype(np.float32)
-    W3f = sd["fc3.weight"].cpu().numpy().astype(np.float32)
-    B3f = sd["fc3.bias"].cpu().numpy().astype(np.float32)
-
     s_obs_pc = np.asarray(ckpt["scales"]["obs_in"], dtype=np.float64)  # (obs_dim,)
     s_h1 = float(ckpt["scales"]["h1"])
     s_h2 = float(ckpt["scales"]["h2"])
 
-    # Same quantisation pipeline as export() — duplicated here so parity_check()
-    # is a self-contained reference. (Kept simple over DRY for clarity.)
-    W1_eff = _absorb_per_channel_input_scales(W1f, s_obs_pc.astype(np.float32))
-    W1q, s_w1 = _quantise_weight_per_row(W1_eff)
-    W2q, s_w2 = _quantise_weight_per_row(W2f)
-    W3q, s_w3 = _quantise_weight_per_row(W3f)
-    B1q, _ = _quantise_bias_int32_per_row(B1f, s_w1, s_x=1.0)
-    B2q, _ = _quantise_bias_int32_per_row(B2f, s_w2, s_x=s_h1)
-    B3q, _ = _quantise_bias_int32_per_row(B3f, s_w3, s_x=s_h2)
-
-    M_q15_l1 = np.round((s_w1 / s_h1) * 32768).astype(np.int16)
-    M_q15_l2 = np.round((s_w2 * s_h1 / s_h2) * 32768).astype(np.int16)
-    dequant_l3 = (s_w3 * s_h2).astype(np.float32)
-    inv_scale_obs = (1.0 / np.maximum(s_obs_pc, 1e-12)).astype(np.float32)
-
     rng = np.random.default_rng(seed)
     if dataset_path is not None and dataset_path.exists():
-        # Use real on-distribution obs from the dataset the QAT was trained on.
         data = np.load(dataset_path)
         all_obs = np.asarray(data["obs"], dtype=np.float32)
         idx = rng.choice(all_obs.shape[0], size=min(n_samples, all_obs.shape[0]),
@@ -367,32 +518,64 @@ def parity_check(student_path: Path, n_samples: int = 1000, seed: int = 0,
         obs = all_obs[idx]
         print(f"[parity] using {obs.shape[0]} real obs from {dataset_path}")
     else:
-        # Fallback: synthetic obs across the realistic operating range.
-        # motor_pos in [-2.18, 2.18], sin/cos in [-1, 1], velocities in
-        # [-15, 15] (centred on what QAT actually observed; uniform [-30, 30]
-        # over-samples saturation boundaries and inflates the max diff).
-        obs = np.empty((n_samples, int(ckpt["obs_dim"])), dtype=np.float32)
-        obs[:, 0] = rng.uniform(-2.18, 2.18, n_samples)
-        obs[:, 1] = rng.uniform(-1.0, 1.0, n_samples)
-        obs[:, 2] = rng.uniform(-1.0, 1.0, n_samples)
-        obs[:, 3] = rng.uniform(-15.0, 15.0, n_samples)
-        obs[:, 4] = rng.uniform(-15.0, 15.0, n_samples)
+        # Fallback: synthetic obs across the realistic operating range of the
+        # 6-dim raw frame ([motor_pos, sin, cos, motor_vel, pen_vel,
+        # prev_action]), tiled to whatever frame-stack width the checkpoint
+        # expects.
+        obs_dim = int(ckpt["obs_dim"])
+        raw = np.empty((n_samples, 6), dtype=np.float32)
+        raw[:, 0] = rng.uniform(-2.18, 2.18, n_samples)
+        raw[:, 1] = rng.uniform(-1.0, 1.0, n_samples)
+        raw[:, 2] = rng.uniform(-1.0, 1.0, n_samples)
+        raw[:, 3] = rng.uniform(-15.0, 15.0, n_samples)
+        raw[:, 4] = rng.uniform(-15.0, 15.0, n_samples)
+        raw[:, 5] = rng.uniform(-1.0, 1.0, n_samples)
+        obs = np.tile(raw, (1, obs_dim // 6))
 
-    # PyTorch QAT forward
+    if rescale is not None:
+        W1q, B1q, W2q, B2q, W3q, B3q = (rescale["W1q"], rescale["B1q"], rescale["W2q"],
+                                         rescale["B2q"], rescale["W3q"], rescale["B3q"])
+        dequant_l3, inv_scale_obs = rescale["dequant_l3"], rescale["inv_scale_obs"]
+        M_q_l1, shift_l1 = rescale["M_q_l1"], rescale["shift_l1"]
+        M_q_l2, shift_l2 = rescale["M_q_l2"], rescale["shift_l2"]
+    else:
+        q = _quantise_all(sd, s_obs_pc, s_h1, s_h2, bits)
+        calib = calibrate_rescale(
+            obs, W1q=q["W1q"], B1q=q["B1q"], s_w1=q["s_w1"], s_h1=s_h1,
+            W2q=q["W2q"], B2q=q["B2q"], s_w2=q["s_w2"], s_h2=s_h2,
+            W3q=q["W3q"], B3q=q["B3q"], inv_scale_obs=q["inv_scale_obs"], max_int=max_int,
+        )
+        W1q, B1q, W2q, B2q, W3q, B3q = q["W1q"], q["B1q"], q["W2q"], q["B2q"], q["W3q"], q["B3q"]
+        dequant_l3, inv_scale_obs = q["dequant_l3"], q["inv_scale_obs"]
+        M_q_l1, shift_l1 = calib["M_q_l1"], calib["shift_l1"]
+        M_q_l2, shift_l2 = calib["M_q_l2"], calib["shift_l2"]
+
     with torch.no_grad():
         torch_out = model(torch.from_numpy(obs)).cpu().numpy().reshape(-1)
 
-    # Numpy int8 forward (mirrors the Arduino code)
-    np_out = np.empty(n_samples, dtype=np.float32)
-    for k in range(n_samples):
-        np_out[k] = numpy_forward_int8(
+    diag: dict = {}
+    np_out = np.empty(obs.shape[0], dtype=np.float32)
+    for k in range(obs.shape[0]):
+        np_out[k] = numpy_forward_quantised(
             obs[k],
-            W1=W1q, B1=B1q,
-            W2=W2q, B2=B2q,
-            W3=W3q, B3=B3q,
+            W1=W1q, B1=B1q, W2=W2q, B2=B2q, W3=W3q, B3=B3q,
             inv_scale_obs=inv_scale_obs,
-            M_q15_l1=M_q15_l1, M_q15_l2=M_q15_l2,
-            dequant_l3=dequant_l3,
+            M_q_l1=M_q_l1, shift_l1=shift_l1, M_q_l2=M_q_l2, shift_l2=shift_l2,
+            dequant_l3=dequant_l3, max_int=max_int, diag=diag,
+        )
+
+    int32_max = 2 ** 31 - 1
+    headroom = 1.0 - max(diag.get("max_abs_accum_l1", 0), diag.get("max_abs_accum_l2", 0),
+                          diag.get("max_abs_accum_l3", 0)) / int32_max
+    print(f"[parity] int32 accumulator headroom over {obs.shape[0]} samples: "
+          f"L1 max|accum|={diag.get('max_abs_accum_l1', 0):.3e}, "
+          f"L2={diag.get('max_abs_accum_l2', 0):.3e}, "
+          f"L3={diag.get('max_abs_accum_l3', 0):.3e} "
+          f"(int32 max={int32_max:.3e}, headroom={headroom*100:.1f}%)")
+    if headroom < 0.2:
+        raise RuntimeError(
+            f"int32 accumulator headroom only {headroom * 100:.1f}% on the "
+            f"samples checked — too close to overflow for real hardware use."
         )
 
     diff = np.abs(torch_out - np_out)
@@ -401,8 +584,9 @@ def parity_check(student_path: Path, n_samples: int = 1000, seed: int = 0,
     p50 = float(np.percentile(diff, 50))
     p95 = float(np.percentile(diff, 95))
     p99 = float(np.percentile(diff, 99))
-    lsb = 1.0 / 127.0
-    print(f"[parity] {n_samples} samples — max|torch_qat - numpy_int8|:")
+    lsb = 1.0 / max_int
+    print(f"[parity] {obs.shape[0]} samples — max|torch_qat - numpy_quantised| ({bits}-bit, "
+          f"shift_l1={shift_l1}, shift_l2={shift_l2}):")
     print(f"[parity]   mean = {mean_diff:.4f}  ({mean_diff/lsb:5.1f} LSB)")
     print(f"[parity]   p50  = {p50:.4f}  ({p50/lsb:5.1f} LSB)")
     print(f"[parity]   p95  = {p95:.4f}  ({p95/lsb:5.1f} LSB)")
@@ -424,7 +608,7 @@ def parity_check(student_path: Path, n_samples: int = 1000, seed: int = 0,
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Export a QAT student as a PROGMEM int8 C header")
+    p = argparse.ArgumentParser(description="Export a QAT student as a PROGMEM int C header")
     p.add_argument("--student", required=True, type=Path,
                    help="path to a student_quantised.pt produced by distill_quantised.py")
     p.add_argument("--header", required=True, type=Path,
@@ -433,14 +617,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--source-name", default=None,
                    help="comment string identifying the source run")
     p.add_argument("--no-parity", action="store_true",
-                   help="skip the QAT-vs-int8 numpy parity check that runs after export")
-    p.add_argument("--parity-dataset", type=Path, default=None,
-                   help="optional dataset.npz to draw real on-distribution obs from "
-                        "for the parity check (defaults to synthetic uniform sampling)")
+                   help="skip the QAT-vs-quantised numpy parity check that runs after export")
+    p.add_argument("--parity-dataset", type=Path, required=True,
+                   help="dataset.npz to draw real on-distribution obs from — used both "
+                        "to calibrate the per-layer rescale and (unless --no-parity) "
+                        "for the post-export parity check")
     args = p.parse_args(argv if argv is not None else sys.argv[1:])
-    export(args.student, args.header, source_name=args.source_name)
+    result = export(args.student, args.header, source_name=args.source_name,
+                     calib_dataset=args.parity_dataset)
     if not args.no_parity:
-        parity_check(args.student, dataset_path=args.parity_dataset)
+        parity_check(args.student, dataset_path=args.parity_dataset, rescale=result)
     return 0
 
 

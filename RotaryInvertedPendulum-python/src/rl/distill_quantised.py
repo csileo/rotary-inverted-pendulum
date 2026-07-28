@@ -79,9 +79,12 @@ class FakeQuantSTE(torch.autograd.Function):
         return grad_out, None, None
 
 
-def fake_quant(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """int8 fake-quant: round + clamp to [-127, 127]."""
-    return FakeQuantSTE.apply(x, scale, 127.0)
+def fake_quant(x: torch.Tensor, scale: torch.Tensor, max_int: float = 127.0) -> torch.Tensor:
+    """Symmetric fake-quant: round + clamp to [-max_int, max_int].
+
+    max_int=127 for int8 (default), 32767 for int16.
+    """
+    return FakeQuantSTE.apply(x, scale, max_int)
 
 
 def fake_quant_int32(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -104,9 +107,10 @@ class MaxAbsObserver(nn.Module):
     During eval: uses the frozen EMA value, so scales don't drift mid-eval.
     """
 
-    def __init__(self, ema_decay: float = 0.99):
+    def __init__(self, ema_decay: float = 0.99, max_int: float = 127.0):
         super().__init__()
         self.ema_decay = ema_decay
+        self.max_int = max_int
         # Initialised to a tiny non-zero so the first forward pass doesn't
         # produce divide-by-zero in fake_quant.
         self.register_buffer("max_abs", torch.tensor(1e-3))
@@ -125,7 +129,7 @@ class MaxAbsObserver(nn.Module):
 
     @property
     def scale(self) -> torch.Tensor:
-        return self.max_abs / 127.0
+        return self.max_abs / self.max_int
 
 
 class PerChannelMaxAbsObserver(nn.Module):
@@ -138,9 +142,10 @@ class PerChannelMaxAbsObserver(nn.Module):
     handful of representable values right at the equilibrium.
     """
 
-    def __init__(self, n_channels: int, ema_decay: float = 0.99):
+    def __init__(self, n_channels: int, ema_decay: float = 0.99, max_int: float = 127.0):
         super().__init__()
         self.ema_decay = ema_decay
+        self.max_int = max_int
         self.register_buffer("max_abs", torch.full((n_channels,), 1e-3))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -163,7 +168,7 @@ class PerChannelMaxAbsObserver(nn.Module):
 
     @property
     def scale(self) -> torch.Tensor:
-        return self.max_abs / 127.0  # shape: (n_channels,)
+        return self.max_abs / self.max_int  # shape: (n_channels,)
 
 
 # ---------------------------------------------------------------------------
@@ -186,33 +191,34 @@ class QATStudent(nn.Module):
     which made the QAT-vs-int8 parity worse rather than better.
     """
 
-    def __init__(self, hidden: int = 16, obs_dim: int = 5, act_dim: int = 1):
+    def __init__(self, hidden: int = 16, obs_dim: int = 5, act_dim: int = 1, bits: int = 8):
         super().__init__()
         self.fc1 = nn.Linear(obs_dim, hidden)
         self.fc2 = nn.Linear(hidden, hidden)
         self.fc3 = nn.Linear(hidden, act_dim)
+        self.bits = bits
+        self.max_int = float(2 ** (bits - 1) - 1)  # 127 for int8, 32767 for int16
         # Per-channel observer for the input — the obs dims have very
         # different ranges (motor_pos ±2.18 vs pen_vel ±30), and a shared
         # scale crushes the small-range dims at the equilibrium. The
         # canonical "make int8 work for control" fix.
-        self.obs_in = PerChannelMaxAbsObserver(obs_dim)
+        self.obs_in = PerChannelMaxAbsObserver(obs_dim, max_int=self.max_int)
         # Hidden activations are uniform across channels by virtue of being
         # post-Linear+ReLU, so per-tensor scaling is fine for them.
-        self.obs_h1 = MaxAbsObserver()
-        self.obs_h2 = MaxAbsObserver()
+        self.obs_h1 = MaxAbsObserver(max_int=self.max_int)
+        self.obs_h2 = MaxAbsObserver(max_int=self.max_int)
         self.hidden = hidden
         self.obs_dim = obs_dim
         self.act_dim = act_dim
 
-    @staticmethod
-    def _q_weight_per_row(w: torch.Tensor) -> torch.Tensor:
+    def _q_weight_per_row(self, w: torch.Tensor) -> torch.Tensor:
         # Per-output-channel scaling: each row of W gets its own scale.
         # Standard TFLite-Micro pattern. For a Linear layer y = Wx + b,
-        # the rescale to next layer's int8 then becomes per-output-channel
+        # the rescale to next layer's scale then becomes per-output-channel
         # too — the M_q15 array on Arduino has H entries instead of one.
         # Avoids wasting precision on rows with smaller weight magnitudes.
-        scale = w.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / 127.0  # (out, 1)
-        return fake_quant(w, scale)
+        scale = w.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / self.max_int  # (out, 1)
+        return fake_quant(w, scale, self.max_int)
 
     @staticmethod
     def _q_bias_per_row(b: torch.Tensor, w_scale_per_row: torch.Tensor,
@@ -231,18 +237,18 @@ class QATStudent(nn.Module):
         # Per-channel input quantisation: each obs dim gets its own scale.
         self.obs_in(x)
         s_obs = self.obs_in.scale          # (obs_dim,)
-        x_q = fake_quant(x, s_obs)         # snap each dim to its own int8 grid
+        x_q = fake_quant(x, s_obs, self.max_int)  # snap each dim to its own grid
 
         # ============ Layer 1 — input scale absorbed into weights ============
         # Export computes W_eff_int[i,j] = round(W[i,j] * s_obs[j] / s_w_eff[i])
         # and quantises per row. To make QAT match deploy bit-for-bit, we
         # do the same absorbing here: form W_eff = W * s_obs (broadcast over
         # rows), then per-row fake-quant. Then the matmul uses x_int_signal
-        # = x_q / s_obs (integer-valued floats in [-127, 127]) so the
+        # = x_q / s_obs (integer-valued floats in [-max_int, max_int]) so the
         # accumulator semantics match deploy: accum * s_w_eff[i] + bias.
         W_eff = self.fc1.weight * s_obs                                       # (H, O)
-        s_w1_eff = W_eff.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / 127.0  # (H, 1)
-        W_eff_q = fake_quant(W_eff, s_w1_eff)                                 # rounds per row
+        s_w1_eff = W_eff.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / self.max_int  # (H, 1)
+        W_eff_q = fake_quant(W_eff, s_w1_eff, self.max_int)                   # rounds per row
         s_b1 = s_w1_eff.squeeze(-1).clamp(min=1e-12)                          # (H,)
         b1 = fake_quant_int32(self.fc1.bias, s_b1)
         x_int_signal = x_q / s_obs                                            # int-valued in float
@@ -250,22 +256,22 @@ class QATStudent(nn.Module):
         x = F.relu(x)
         self.obs_h1(x)
         s_h1 = self.obs_h1.scale
-        x = fake_quant(x, s_h1)
+        x = fake_quant(x, s_h1, self.max_int)
 
         # ============ Layer 2 — per-row weights, per-tensor input ============
-        s_w2 = self.fc2.weight.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / 127.0
-        w2_q = fake_quant(self.fc2.weight, s_w2)
+        s_w2 = self.fc2.weight.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / self.max_int
+        w2_q = fake_quant(self.fc2.weight, s_w2, self.max_int)
         s_b2 = (s_w2.squeeze(-1) * s_h1).clamp(min=1e-12)
         b2 = fake_quant_int32(self.fc2.bias, s_b2)
         x = F.linear(x, w2_q, b2)
         x = F.relu(x)
         self.obs_h2(x)
         s_h2 = self.obs_h2.scale
-        x = fake_quant(x, s_h2)
+        x = fake_quant(x, s_h2, self.max_int)
 
         # ============ Layer 3 — per-row weights, per-tensor input, float→tanh =====
-        s_w3 = self.fc3.weight.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / 127.0
-        w3_q = fake_quant(self.fc3.weight, s_w3)
+        s_w3 = self.fc3.weight.abs().amax(dim=1, keepdim=True).clamp(min=1e-8) / self.max_int
+        w3_q = fake_quant(self.fc3.weight, s_w3, self.max_int)
         s_b3 = (s_w3.squeeze(-1) * s_h2).clamp(min=1e-12)
         b3 = fake_quant_int32(self.fc3.bias, s_b3)
         x = F.linear(x, w3_q, b3)
@@ -356,6 +362,7 @@ def save_qat_checkpoint(qat: QATStudent, out_path: Path, val_mse: float) -> None
         "hidden": qat.hidden,
         "obs_dim": qat.obs_dim,
         "act_dim": qat.act_dim,
+        "bits": qat.bits,
         "val_mse": val_mse,
         # Convenience: surface activation scales as plain floats so
         # export_weights_quantised.py can read them without touching nn.Module.
@@ -392,6 +399,15 @@ def main(argv: list[str] | None = None) -> int:
                         "(re-used as-is; QAT just robustifies the existing student)")
     p.add_argument("--out-dir", required=True, type=Path,
                    help="output directory for the quantised .pt")
+    p.add_argument("--bits", type=int, default=8, choices=range(8, 17), metavar="[8-16]",
+                   help="int8 (default, ~0.4ms/inference on AVR) or a wider "
+                        "logical range stored as int16_t (9-16, ~1.1ms/inference "
+                        "regardless of the exact value — the C type is what "
+                        "drives the AVR widening-multiply speed). 16 is the "
+                        "finest grid but int32-accumulator overflow is a real "
+                        "risk at this model's size; export_weights_quantised.py "
+                        "checks this empirically and will refuse to export if "
+                        "it's too close — reduce --bits (e.g. 14) if it does")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=3e-4,
@@ -413,9 +429,9 @@ def main(argv: list[str] | None = None) -> int:
     float_student = StudentMLP(hidden=hidden, obs_dim=obs_dim, act_dim=act_dim)
     float_student.load_state_dict(ckpt["state_dict"])
 
-    qat = QATStudent(hidden=hidden, obs_dim=obs_dim, act_dim=act_dim)
+    qat = QATStudent(hidden=hidden, obs_dim=obs_dim, act_dim=act_dim, bits=args.bits)
     warmstart_from_float(qat, float_student)
-    print(f"[qat] warmstarted QAT model from float student")
+    print(f"[qat] warmstarted QAT model from float student, bits={args.bits}")
 
     print(f"[qat] loading dataset: {args.dataset}")
     data = np.load(args.dataset)
