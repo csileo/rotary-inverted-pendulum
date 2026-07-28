@@ -50,7 +50,9 @@ Same `--frame-stack` caveat as above. This opens a graphical viewer, so it needs
 unattended on boot or on-demand: it waits for the Nano's USB cable and for
 12V motor power to actually show up (in whatever order and after whatever
 delay someone plugs them in), reflashes the Nano only if its firmware
-doesn't already match, then runs `policy_working_balance.zip`. Pure Python
+doesn't already match, then runs the distilled student
+(`distill_working_balance_h32_dagger/student.pt`) by default — override with
+`PENDULUM_POLICY`, e.g. back to `policy_working_balance.zip`. Pure Python
 (no udev rule, no shell script), so it runs the same way on Linux, macOS,
 and Windows. See `tools/pi_demo/README.md` for setup and the environment
 variables that pick a different policy/duration.
