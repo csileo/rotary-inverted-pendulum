@@ -381,8 +381,6 @@ class RotaryInvertedPendulumEnv(gym.Env):
         # reference paper. The accel-envelope DR + velocity cap already
         # bound motion smoothness physically.
         render_mode: str | None = None,
-        render_width: int = 640,
-        render_height: int = 480,
         # --- Phase 2: realism / domain randomisation ---
         domain_randomization: bool = False,
         motor_max_accel_rad_s2: float | None = None,  # None => use max_accel_rad_s2
@@ -435,8 +433,6 @@ class RotaryInvertedPendulumEnv(gym.Env):
         self._prev_action = 0.0
         self._prev_motor_vel = 0.0  # tracked for the motor-jerk reward term
         self.render_mode = render_mode
-        self._render_width = int(render_width)
-        self._render_height = int(render_height)
 
         # Phase 2 config
         self.domain_randomization = domain_randomization
@@ -538,7 +534,6 @@ class RotaryInvertedPendulumEnv(gym.Env):
         self.observation_space = spaces.Box(low=-obs_high, high=obs_high, dtype=np.float32)
 
         self._viewer = None
-        self._renderer = None  # offscreen, only used for render_mode="rgb_array"
 
     # --- Gymnasium API -----------------------------------------------------
 
@@ -762,15 +757,6 @@ class RotaryInvertedPendulumEnv(gym.Env):
     def render(self):
         if self.render_mode is None:
             return None
-        if self.render_mode == "rgb_array":
-            # Offscreen — no window, no external screen recorder needed.
-            # mujoco.Renderer owns its own OpenGL context, independent of
-            # the interactive viewer.launch_passive() window used below.
-            if self._renderer is None:
-                self._renderer = mujoco.Renderer(
-                    self.model, height=self._render_height, width=self._render_width)
-            self._renderer.update_scene(self.data)
-            return self._renderer.render()
         if self._viewer is None:
             from mujoco import viewer  # noqa: WPS433  (deferred import)
             self._viewer = viewer.launch_passive(self.model, self.data)
@@ -781,9 +767,6 @@ class RotaryInvertedPendulumEnv(gym.Env):
         if self._viewer is not None:
             self._viewer.close()
             self._viewer = None
-        if self._renderer is not None:
-            self._renderer.close()
-            self._renderer = None
 
     # --- Internal helpers --------------------------------------------------
 

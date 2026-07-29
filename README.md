@@ -65,21 +65,6 @@ this specific checkpoint — it was trained at 50 Hz, not the 35 Hz
 `--frame-stack`-only examples above use. This opens a graphical viewer, so
 it needs a display (no headless/SSH-only boxes).
 
-To save the rollout straight to an `.mp4` instead — offscreen MuJoCo
-rendering, no window, no external screen recorder — add `--record-video`
-(works on headless/SSH-only boxes too, since no display is opened):
-
-```bash
-python train_sac.py --eval models/policy_working_balance_before_finetuning.zip \
-    --control-freq 50 --frame-stack 3 --reward-motor-jerk-weight 0.01 \
-    --eval-seconds 30 --record-video eval.mp4
-```
-
-Needs `imageio` + `imageio-ffmpeg` (both in `requirements.txt`). Recording
-also runs faster than real time, since nothing needs to watch it live —
-the video's own `fps` (defaults to `--control-freq`) sets playback speed,
-not wall-clock time.
-
 ## 5. Unattended auto-demo (e.g. a Raspberry Pi running headless)
 
 `tools/pi_demo/run_demo.py` wraps steps 1 and 3 into a launcher meant to run
