@@ -254,6 +254,12 @@ def evaluate(args: argparse.Namespace) -> None:
     model = SAC.load(args.eval, device=args.device)
 
     obs, _ = env.reset(seed=0)
+    if args.eval_warmup_s > 0:
+        # Open the viewer now (first render() call) so there's a window to
+        # resize/zoom by hand before the timed rollout starts.
+        env.render()
+        print(f"Warmup: {args.eval_warmup_s:.0f}s to resize/zoom the viewer window...")
+        time.sleep(args.eval_warmup_s)
     total_reward = 0.0
     n_steps = 0
     target_steps = int(args.eval_seconds * env.control_freq_hz)
@@ -412,6 +418,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--eval", default=None,
                    help="if set, skip training and render an eval rollout from this checkpoint")
     p.add_argument("--eval-seconds", type=float, default=30.0)
+    p.add_argument("--eval-warmup-s", type=float, default=0.0,
+                   help="pause (seconds) after the viewer window opens, before the "
+                        "timed rollout starts — lets you resize/zoom the window by "
+                        "hand first.")
     return p.parse_args(argv)
 
 
