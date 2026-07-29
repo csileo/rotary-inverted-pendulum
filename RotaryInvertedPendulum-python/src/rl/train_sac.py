@@ -10,6 +10,13 @@ Usage:
 
 After training, render a 30 s evaluation rollout in the MuJoCo viewer:
     python train_sac.py --eval runs/sac_2026-05-01/best_model.zip
+
+...or save it straight to an .mp4 instead (offscreen MuJoCo rendering, no
+window, no external screen recorder — see pendulum_env.py's render_mode=
+"rgb_array" path):
+    python train_sac.py --eval runs/sac_2026-05-01/best_model.zip \\
+        --record-video eval.mp4
+Needs imageio + imageio-ffmpeg: pip install imageio imageio-ffmpeg
 """
 
 from __future__ import annotations
@@ -227,6 +234,7 @@ def train(args: argparse.Namespace) -> Path:
 
 def evaluate(args: argparse.Namespace) -> None:
     print(f"Loading {args.eval}")
+    recording = bool(args.record_video)
     # Eval env must match the training config — control rate especially,
     # since a 75 Hz-trained policy run at 35 Hz produces garbage. Reward
     # weights don't affect inference but we pass them for cleaner reward
@@ -237,7 +245,7 @@ def evaluate(args: argparse.Namespace) -> None:
     # non-None defaults for some of these (e.g. max_velocity_rad_s, which
     # crashes if None reaches it). Match the make_env() pattern.
     env_kwargs = dict(
-        render_mode="human",
+        render_mode="rgb_array" if recording else "human",
         control_freq_hz=args.control_freq,
         max_accel_rad_s2=args.max_accel_rad_s2,
         frame_stack=args.frame_stack,
@@ -253,12 +261,23 @@ def evaluate(args: argparse.Namespace) -> None:
     env = RotaryInvertedPendulumEnv(**env_kwargs)
     model = SAC.load(args.eval, device=args.device)
 
+    video_writer = None
+    if recording:
+        import imageio  # noqa: WPS433  (deferred — optional dep, see --record-video help)
+        fps = args.record_video_fps or env.control_freq_hz
+        video_writer = imageio.get_writer(args.record_video, fps=fps)
+        print(f"Recording to {args.record_video} at {fps:.1f} fps "
+              "(offscreen, no window)")
+
     obs, _ = env.reset(seed=0)
     total_reward = 0.0
     n_steps = 0
     target_steps = int(args.eval_seconds * env.control_freq_hz)
     # Pace the loop to wall clock so 1 sim second = 1 real second; otherwise
-    # mj_step + predict run sub-millisecond and the viewer flashes shut.
+    # mj_step + predict run sub-millisecond and the viewer flashes shut. Not
+    # needed while recording — nothing is watching live, and the video's own
+    # fps (not wall-clock speed) sets playback timing, so let it run at full
+    # CPU speed instead of taking --eval-seconds real seconds to produce.
     dt = 1.0 / env.control_freq_hz
     next_tick = time.monotonic()
 
@@ -268,19 +287,25 @@ def evaluate(args: argparse.Namespace) -> None:
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
             n_steps += 1
-            env.render()
+            frame = env.render()
+            if video_writer is not None and frame is not None:
+                video_writer.append_data(frame)
             if terminated or truncated:
                 obs, _ = env.reset()
-            next_tick += dt
-            sleep_for = next_tick - time.monotonic()
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-            else:
-                # We fell behind real time (rare on CPU but possible if the
-                # viewer is slow); resync without compounding the lag.
-                next_tick = time.monotonic()
+            if not recording:
+                next_tick += dt
+                sleep_for = next_tick - time.monotonic()
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+                else:
+                    # We fell behind real time (rare on CPU but possible if the
+                    # viewer is slow); resync without compounding the lag.
+                    next_tick = time.monotonic()
     finally:
         env.close()
+        if video_writer is not None:
+            video_writer.close()
+            print(f"Saved video -> {args.record_video}")
 
     print(f"Eval: {n_steps} steps, total reward {total_reward:.2f}, "
           f"mean per step {total_reward / n_steps:.4f}")
@@ -412,6 +437,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--eval", default=None,
                    help="if set, skip training and render an eval rollout from this checkpoint")
     p.add_argument("--eval-seconds", type=float, default=30.0)
+    p.add_argument("--record-video", default=None,
+                   help="save the eval rollout to this .mp4 instead of opening the "
+                        "interactive viewer window — offscreen MuJoCo rendering, "
+                        "no external screen recorder needed. Requires imageio "
+                        "(+ imageio-ffmpeg): pip install imageio imageio-ffmpeg")
+    p.add_argument("--record-video-fps", type=float, default=None,
+                   help="video frame rate; defaults to the env's control_freq_hz "
+                        "(one rendered frame per control step, so playback speed "
+                        "matches real time)")
     return p.parse_args(argv)
 
 
