@@ -252,6 +252,33 @@ Optional environment variables (add under `[Service]` with
 | `PENDULUM_CONTROL_FREQ_HZ` | Control loop frequency, must match training (default 35.0) |
 | `PENDULUM_MAX_ACCEL_RAD_S2` | Action-to-acceleration scale, must match training (default 150.0) |
 
+### Updating to the latest demo
+
+`demo` is a synthetic branch, regenerated wholesale from `main` by
+`tools/sync_fork_branches.py` on the dev side (see that script's
+docstring) — always fast-forward, so a plain `git pull` normally works.
+To force the Pi's checkout to exactly match the latest `demo` and discard
+any local drift:
+
+```bash
+cd ~/rotary-inverted-pendulum
+git fetch origin demo
+git reset --hard origin/demo
+git clean -fd -e .venv -e RotaryInvertedPendulum-arduino/LowLevelServer/hw_config.h -e tools/pi_demo/usb_config.json
+sudo systemctl restart pendulum-demo.service
+```
+
+`demo` ships with no `.gitignore` (it's a filtered file list, not a real
+dev branch), so a plain `git clean -fd` would also delete files that are
+untracked on purpose and specific to this Pi/rig: `.venv`, `hw_config.h`
+(copied by hand in step 7 — not regenerable by a pull) and
+`usb_config.json` (written by `detect_usb_config.py` in step 7) — the
+`-e` excludes above keep those. Watch the demo restart with:
+
+```bash
+journalctl -u pendulum-demo.service -f
+```
+
 ## 10. Physical mounting on the rig
 
 1. Mount the Pi near the rig (e.g. under the base), away from motor
