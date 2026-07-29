@@ -14,6 +14,31 @@ the current best checkpoint.
 Superseded checkpoints (previous `policy_working_balance` and `_v4`), with their logs
 and replay buffers, are kept in `experiments/` for reference.
 
+## Pre-fine-tuning comparison point
+
+`policy_working_balance_before_finetuning.zip` is `policy_working_balance.zip`'s
+direct ancestor: the pure-simulation checkpoint (`curriculum8_stage1/best_model.zip`,
+archived 04/07/2026) from *before* any real-rig fine-tuning
+(`finetune_curriculum8` onward — see `PLAN/RL.md`, Étape 15). Useful to
+demonstrate the sim/real gap: `policy_working_balance.zip` went through 60+
+real-rig fine-tuning episodes and now fails to balance in MuJoCo simulation
+(specialised away from sim dynamics), while this earlier checkpoint still
+balances fine in the simulator:
+
+```bash
+python train_sac.py --eval models/policy_working_balance_before_finetuning.zip \
+    --control-freq 50 --frame-stack 3 --reward-motor-jerk-weight 0.01 --eval-seconds 30
+```
+
+`--control-freq 50` is required — this checkpoint was trained at 50 Hz, not the
+35 Hz `train_sac.py --eval` otherwise defaults to (see that script's own
+warning comment: evaluating at the wrong rate "produces garbage").
+
+No replay buffer (`.pkl`) ships alongside it — the archived run directory
+(`experiments/runs/curriculum8_stage1/` at the `SimToReal` repo root) never
+had one: `train_sac.py`'s plain simulation training doesn't save a replay
+buffer the way `finetune_async.py`'s real-rig sessions always do.
+
 ## Distilled student
 
 `distill_working_balance_h32_dagger/student.pt` is not a SAC checkpoint — it's

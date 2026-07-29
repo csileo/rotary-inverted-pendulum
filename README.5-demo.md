@@ -40,10 +40,19 @@ If a checkpoint doesn't balance well on your rig, the full repo (`main` branch) 
 No hardware, no port — this runs the checkpoint against the MuJoCo simulator instead, in a viewer window:
 
 ```bash
-python train_sac.py --eval models/policy_working_balance.zip --frame-stack 3 --eval-seconds 30
+python train_sac.py --eval models/policy_working_balance_before_finetuning.zip \
+    --control-freq 50 --frame-stack 3 --reward-motor-jerk-weight 0.01 --eval-seconds 30
 ```
 
-Same `--frame-stack` caveat as above. This opens a graphical viewer, so it needs a display (no headless/SSH-only boxes).
+Note this uses `policy_working_balance_before_finetuning.zip`, not
+`policy_working_balance.zip` — the latter went through 60+ episodes of
+real-rig fine-tuning and specialised away from simulation dynamics enough
+that it no longer balances in MuJoCo at all, even though it's the best
+checkpoint on the real rig by far (see `models/README.md`'s "Pre-fine-tuning
+comparison point" for the full story). `--control-freq 50` is required for
+this specific checkpoint — it was trained at 50 Hz, not the 35 Hz
+`--frame-stack`-only examples above use. This opens a graphical viewer, so
+it needs a display (no headless/SSH-only boxes).
 
 ## 5. Unattended auto-demo (e.g. a Raspberry Pi running headless)
 

@@ -38,7 +38,12 @@ what levels 3/4 are meant to teach), see also README.md's "Branches" table:
   only - no RL/sim code, no URDF, so the colleague has to write their own.
 - demo: just enough to run inference against the real rig with the
   three reference SAC teacher models (working balance, partial balance,
-  fails to swing up) plus the DAgger-refreshed distilled student, shipped
+  fails to swing up) plus policy_working_balance_before_finetuning.zip
+  (working balance's pure-sim ancestor, from before real-rig fine-tuning
+  specialised it away from sim dynamics - the one to use with
+  train_sac.py's --eval simulation preview, since working_balance.zip
+  itself no longer balances in MuJoCo - see models/README.md), plus the
+  DAgger-refreshed distilled student, shipped
   as both student.pt (needs distill.py's StudentMLP + torch) and
   student_numpy.npz (needs only numpy_student.py - no torch/
   stable-baselines3 import at all; this is what run_demo.py loads by
@@ -143,6 +148,10 @@ LEVEL5_FILES = [
     (
         f"{RL_DIR}/models/policy_partial_balance.zip",
         f"{RL_DIR}/models/policy_partial_balance.zip",
+    ),
+    (
+        f"{RL_DIR}/models/policy_working_balance_before_finetuning.zip",
+        f"{RL_DIR}/models/policy_working_balance_before_finetuning.zip",
     ),
     (
         f"{RL_DIR}/models/distill_working_balance_h32_dagger/student.pt",
