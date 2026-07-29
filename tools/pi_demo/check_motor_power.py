@@ -33,30 +33,46 @@ TEST_ACCEL_RAD_S2 = 20.0  # gentle — this is a presence check, not a swing
 TEST_DURATION_S = 0.1
 
 
-def motor_power_present(port: str | None = None) -> bool:
-    if port is None:
-        port = find_nano_port()
+def _pulse_and_check(client: LowLevelClient) -> bool:
+    if not client.wait_until_ready():
+        raise RuntimeError("Nano did not respond to READY")
 
-    with LowLevelClient(port) as client:
-        if not client.wait_until_ready():
-            raise RuntimeError("Nano did not respond to READY")
-
+    client.set_acceleration(0.0)
+    client.engage_motor()
+    try:
+        start = client.get_state()
+        client.set_acceleration(TEST_ACCEL_RAD_S2)
+        time.sleep(TEST_DURATION_S)
+        end = client.get_state()
+    finally:
+        # disengage_motor() forceStop()s the stepper immediately
+        # regardless of residual commanded velocity — see
+        # LowLevelServer.ino's CMD_DISENGAGE_MOTOR handler.
         client.set_acceleration(0.0)
-        client.engage_motor()
-        try:
-            start = client.get_state()
-            client.set_acceleration(TEST_ACCEL_RAD_S2)
-            time.sleep(TEST_DURATION_S)
-            end = client.get_state()
-        finally:
-            # disengage_motor() forceStop()s the stepper immediately
-            # regardless of residual commanded velocity — see
-            # LowLevelServer.ino's CMD_DISENGAGE_MOTOR handler.
-            client.set_acceleration(0.0)
-            client.disengage_motor()
+        client.disengage_motor()
 
     moved = abs(end.motor_pos_rad - start.motor_pos_rad)
     return moved >= MOVEMENT_THRESHOLD_RAD
+
+
+def motor_power_present(port: str | None = None, *,
+                         client: LowLevelClient | None = None) -> bool:
+    """Check for 12V motor power via a brief acceleration pulse.
+
+    Pass an already-open `client` (e.g. from `tools/pi_demo/run_demo.py`'s
+    persistent connection) to avoid opening a fresh serial connection —
+    each new connection resets the Arduino (~2s), which is wasteful when
+    this is polled repeatedly while waiting for the 12V adapter to be
+    plugged in. Falls back to opening its own connection (and closing it
+    afterward) for standalone CLI use.
+    """
+    if client is not None:
+        return _pulse_and_check(client)
+
+    if port is None:
+        port = find_nano_port()
+    with LowLevelClient(port) as client:
+        return _pulse_and_check(client)
 
 
 def main(argv: list[str] | None = None) -> int:

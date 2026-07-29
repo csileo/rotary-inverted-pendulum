@@ -38,9 +38,12 @@ what levels 3/4 are meant to teach), see also README.md's "Branches" table:
   only - no RL/sim code, no URDF, so the colleague has to write their own.
 - demo: just enough to run inference against the real rig with the
   three reference SAC teacher models (working balance, partial balance,
-  fails to swing up) plus the DAgger-refreshed distilled student
-  (distill_working_balance_h32_dagger/student.pt - needs distill.py's
-  StudentMLP to load) - run_policy.py's actual runtime deps only - NOT
+  fails to swing up) plus the DAgger-refreshed distilled student, shipped
+  as both student.pt (needs distill.py's StudentMLP + torch) and
+  student_numpy.npz (needs only numpy_student.py - no torch/
+  stable-baselines3 import at all; this is what run_demo.py loads by
+  default, since torch's import time dominates cold-start latency on a
+  Pi 3B+) - run_policy.py's actual runtime deps only - NOT
   async_control.py/real_env.py, which are finetune_async.py-only), plus
   train_sac.py's simulation-only --eval path (pendulum_env.py,
   pendulum_geometry.py, reward.py, sysid_params.json, urdf/model.urdf -
@@ -121,6 +124,9 @@ LEVEL5_FILES = [
     # run_policy.py imports StudentMLP from here whenever --policy is a .pt
     # (distilled student) rather than a SAC teacher .zip.
     (f"{RL_DIR}/distill.py", f"{RL_DIR}/distill.py"),
+    # Torch-free inference for a .npz student — what run_demo.py loads by
+    # default, so the demo Pi never has to import torch for its hot path.
+    (f"{RL_DIR}/numpy_student.py", f"{RL_DIR}/numpy_student.py"),
     (
         f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
         f"{RL_DIR}/sysid_profiles/aliexpress_uk.json",
@@ -141,6 +147,10 @@ LEVEL5_FILES = [
     (
         f"{RL_DIR}/models/distill_working_balance_h32_dagger/student.pt",
         f"{RL_DIR}/models/distill_working_balance_h32_dagger/student.pt",
+    ),
+    (
+        f"{RL_DIR}/models/distill_working_balance_h32_dagger/student_numpy.npz",
+        f"{RL_DIR}/models/distill_working_balance_h32_dagger/student_numpy.npz",
     ),
     (
         "RotaryInvertedPendulum-arduino/LowLevelServer/LowLevelServer.ino",
