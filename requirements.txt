@@ -15,3 +15,5 @@ scipy
 matplotlib
 tensorboard
 pyserial
+imageio
+imageio-ffmpeg
