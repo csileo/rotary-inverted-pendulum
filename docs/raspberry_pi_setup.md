@@ -159,18 +159,23 @@ move on to automation.
 
 A distilled student MLP is also available as a lighter-weight alternative
 to the SAC teacher `.zip` — same balance quality (upright ≈ 0.987 on a Pi
-3B+, validated 2026-07-28), much smaller and faster to load:
+3B+, validated 2026-07-28), much smaller and faster to load. It ships in
+two equivalent forms: `student.pt` (PyTorch, needs `distill.py`'s
+`StudentMLP`) and `student_numpy.npz` (plain NumPy, bit-exact to the `.pt`
+version — see `numpy_student.py`). The `.npz` form never imports
+torch/stable-baselines3 at all, which matters a lot here: on a Pi 3B+
+that import alone can take several seconds.
 
 ```bash
 python run_policy.py \
-    --policy models/distill_working_balance_h32_dagger/student.pt \
+    --policy models/distill_working_balance_h32_dagger/student_numpy.npz \
     --frame-stack 3 --duration-s 30 --port <PORT>
 ```
 
-Both checkpoints are inference-only here — `run_policy.py` still runs on
-the Pi itself, not on the Nano; see `models/README.md` for the distinction
-and why an actual on-device (standalone) deployment of the student was not
-pursued.
+All three checkpoint forms are inference-only here — `run_policy.py` still
+runs on the Pi itself, not on the Nano; see `models/README.md` for the
+distinction and why an actual on-device (standalone) deployment of the
+student was not pursued.
 
 ## 9. Automate: `tools/pi_demo/run_demo.py`
 
@@ -194,7 +199,10 @@ boot (e.g. after a power outage):
 sudo tee /etc/systemd/system/pendulum-demo.service > /dev/null <<'EOF'
 [Unit]
 Description=Rotary inverted pendulum - unattended demo
-After=network.target
+# No After=network.target: the demo only talks to the Nano over USB
+# serial, no network needed, so there's no reason to make boot wait on
+# a network link coming up (which can add real seconds, and may never
+# resolve at all on a Pi with no Wi-Fi configured).
 
 [Service]
 Type=simple
@@ -223,16 +231,26 @@ itself ever crashes outright. The only way to actually stop it is Ctrl-C
 (SIGTERM, when run as the service) — a Nano unplug/replug or a finished
 run just feeds back into the same loop.
 
+Unlike a naive "wrap the CLI in a loop" implementation, `run_demo.py`
+loads the policy and opens its connection to the Nano only once, then
+reuses both across every cycle — each fresh serial connection resets the
+Arduino (~2s), and repeatedly re-importing torch is slow on a Pi 3B+, so
+paying either cost once per boot instead of once per cycle is most of
+what makes cycles fast. It only reconnects/reflashes if something
+actually breaks (e.g. the Nano gets unplugged).
+
 Optional environment variables (add under `[Service]` with
 `Environment=`, see `tools/pi_demo/README.md`):
 
 | Variable | Meaning |
 |---|---|
-| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to load. Defaults to `models/distill_working_balance_h32_dagger/student.pt`; set to `models/policy_working_balance.zip` for the full SAC teacher instead |
+| `PENDULUM_POLICY` | Path to the `.zip`/`.pt`/`.npz` checkpoint to load. Defaults to `models/distill_working_balance_h32_dagger/student_numpy.npz` (no torch import at all); set to `models/policy_working_balance.zip` for the full SAC teacher instead |
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
 | `PENDULUM_LOOP_DELAY_S` | Pause between demo cycles (default 10s) |
+| `PENDULUM_CONTROL_FREQ_HZ` | Control loop frequency, must match training (default 35.0) |
+| `PENDULUM_MAX_ACCEL_RAD_S2` | Action-to-acceleration scale, must match training (default 150.0) |
 
 ## 10. Physical mounting on the rig
 
@@ -254,7 +272,31 @@ Optional environment variables (add under `[Service]` with
    journalctl -u pendulum-demo.service -f
    ```
 
-## 11. Troubleshooting
+## 11. Speeding up Pi boot time
+
+Measure before guessing what's slow:
+
+```bash
+systemd-analyze blame
+systemd-analyze critical-path
+```
+
+A few cheap, general wins on a Pi dedicated to this demo (headless, no
+desktop):
+
+- Disable services this Pi doesn't use: `sudo systemctl disable bluetooth
+  hciuart triggerhappy` (and `avahi-daemon` too, unless you rely on
+  `pendulum-pi.local` to SSH in — see step 3).
+- `pendulum-demo.service` itself no longer waits on `network.target` (see
+  step 9) — the demo needs no network, so this removes one possible source
+  of boot-time stalls, especially now that Wi-Fi credentials aren't stored
+  on the Pi.
+- The SD card itself is usually the single biggest lever: an A1/A2-rated
+  card boots noticeably faster than a generic one. If this Pi 3B+ supports
+  USB boot, an SSD is a bigger jump still, but that's a full re-provision,
+  not a quick tweak.
+
+## 12. Troubleshooting
 
 - **`arduino-cli board list` doesn't see the Nano**: faulty USB cable
   (common with "charge only" cables), or a USB-serial chip (CH340 etc.)
