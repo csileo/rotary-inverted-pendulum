@@ -277,20 +277,57 @@ Optional environment variables (add under `[Service]` with
 Measure before guessing what's slow:
 
 ```bash
+systemd-analyze
 systemd-analyze blame
 systemd-analyze critical-path
 ```
 
-A few cheap, general wins on a Pi dedicated to this demo (headless, no
-desktop):
+### Confirmed wins (measured on this Pi: 32.442s → 20.315s userspace, -37%)
+
+1. **Disable cloud-init.** It only provisions the Pi on its very first boot
+   (hostname, SSH, Wi-Fi, etc.) — once that's done, re-running it every
+   boot was costing ~4.5s directly on the critical path
+   (`cloud-init-main` 3.5s + `cloud-init-local` 0.8s + `cloud-init-network`
+   0.3s, plus `cloud-config`/`cloud-final` off-path). Doesn't affect
+   anything already configured — it just stops re-running:
+   ```bash
+   sudo touch /etc/cloud/cloud-init.disabled
+   ```
+2. **Disable `NetworkManager-wait-online.service`.** Nothing on this Pi
+   needs a guaranteed "network is up" signal before starting, so this was
+   6.8s of pure wasted wait every boot:
+   ```bash
+   sudo systemctl disable NetworkManager-wait-online.service
+   ```
+3. **`pendulum-demo.service` doesn't depend on `network.target`** (see
+   step 9) — the demo itself needs no network, so it starts and runs
+   independent of any NetworkManager slowness regardless of the two points
+   above.
+
+Reboot after applying 1 and 2 (`sudo reboot`).
+
+### Tried, no measurable effect — don't bother repeating these
+
+- **Static IP on `eth0` instead of DHCP**: no change (8.797s → 8.778s).
+  The DHCP lease itself is already fast (~0.16s); `journalctl -u
+  NetworkManager -b` showed the remaining delay isn't DHCP negotiation.
+- **Disabling the Wi-Fi radio** (`dtoverlay=disable-wifi` in
+  `/boot/firmware/config.txt`): no change either — the same ~6s
+  `NetworkManager[...]: manager: startup complete` gap persisted even
+  with the Wi-Fi device entirely absent from the logs. Reverted.
+
+What's left (`NetworkManager.service` at ~8.8s, dominated by that ~6s
+internal "startup complete" delay) looks like a fixed NetworkManager
+startup cost we couldn't trace to DHCP, static IP, or Wi-Fi — chasing it
+further would mean retuning NetworkManager itself or switching network
+stacks, more effort than it's worth here since `pendulum-demo.service`
+doesn't depend on it anyway.
+
+### Untested ideas (not yet tried on this Pi)
 
 - Disable services this Pi doesn't use: `sudo systemctl disable bluetooth
   hciuart triggerhappy` (and `avahi-daemon` too, unless you rely on
   `pendulum-pi.local` to SSH in — see step 3).
-- `pendulum-demo.service` itself no longer waits on `network.target` (see
-  step 9) — the demo needs no network, so this removes one possible source
-  of boot-time stalls, especially now that Wi-Fi credentials aren't stored
-  on the Pi.
 - The SD card itself is usually the single biggest lever: an A1/A2-rated
   card boots noticeably faster than a generic one. If this Pi 3B+ supports
   USB boot, an SSD is a bigger jump still, but that's a full re-provision,
