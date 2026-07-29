@@ -40,6 +40,7 @@ import torch.nn.functional as F
 from stable_baselines3 import SAC
 
 from pendulum_env import RotaryInvertedPendulumEnv
+from numpy_student import numpy_forward
 
 
 # ---------------------------------------------------------------------------
@@ -319,14 +320,6 @@ def stage_train(
 # ---------------------------------------------------------------------------
 # Stage 3: numpy parity check
 # ---------------------------------------------------------------------------
-
-def numpy_forward(weights: dict, x: np.ndarray) -> np.ndarray:
-    """Forward pass mirroring the Arduino C++ code: ReLU, ReLU, tanh."""
-    h1 = np.maximum(0.0, x @ weights["W1"].T + weights["B1"])
-    h2 = np.maximum(0.0, h1 @ weights["W2"].T + weights["B2"])
-    out = np.tanh(h2 @ weights["W3"].T + weights["B3"])
-    return out
-
 
 def _extract_weights(model: StudentMLP) -> dict:
     sd = model.state_dict()

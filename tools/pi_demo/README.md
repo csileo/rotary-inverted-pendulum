@@ -28,10 +28,19 @@ the launcher itself is plain Python rather than a shell script.
   the 12V adapter isn't plugged in (or there's a driver/Vref/enable wiring
   fault) — no new sensing hardware required.
 - **`run_demo.py`** — orchestrates the above in order, waiting (not
-  failing) at each step until its precondition is met, then runs
-  `run_policy.py`. Loops forever (10s pause between cycles by default) so
-  a headless/no-network Pi keeps re-demoing without anyone reconnecting to
+  failing) at each step until its precondition is met, then runs the
+  policy. Loops forever (10s pause between cycles by default) so a
+  headless/no-network Pi keeps re-demoing without anyone reconnecting to
   restart it — Ctrl-C or SIGTERM (`systemctl stop`) is the only way out.
+  Loads the policy once and keeps one serial connection to the Nano open
+  across every cycle (calling `run_policy.py`'s `run_control_loop()`
+  in-process instead of launching it as a fresh subprocess each time) —
+  opening a new connection resets the Arduino, so reusing one avoids
+  paying that reset repeatedly. The connection is only rediscovered /
+  reflashed / reopened if something actually goes wrong (e.g. the Nano
+  gets unplugged). Defaults `PENDULUM_POLICY` to the `.npz` (NumPy-only)
+  build of the distilled student, not the `.pt`/torch one, so this
+  process never has to import torch at all — see `numpy_student.py`.
 
 ## Which Nano to talk to
 
@@ -66,9 +75,8 @@ writes `usb_config.json` directly.
 4. Run it: `python run_demo.py`. Wire it to whatever "on demand" trigger
    you want — a systemd service on the Pi, a Scheduled Task on Windows, a
    physical button via a GPIO watcher, cron, etc. This repo doesn't
-   prescribe one; the script is a plain blocking foreground process that
-   exits when the policy's `--duration-s` elapses, on Ctrl-C/SIGTERM, or
-   if a wait step times out.
+   prescribe one; the script is a plain foreground process that loops
+   forever (see above), blocking until Ctrl-C/SIGTERM.
 
 ## Environment variables
 
@@ -77,8 +85,10 @@ select which Nano to talk to (see above) — only what to run once it's found.
 
 | Variable | Meaning |
 |---|---|
-| `PENDULUM_POLICY` | Path to the `.zip`/`.pt` checkpoint to run |
+| `PENDULUM_POLICY` | Path to the `.zip`/`.pt`/`.npz` checkpoint to run |
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
 | `PENDULUM_DURATION_S` | How long to balance before stopping |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
 | `PENDULUM_LOOP_DELAY_S` | Pause between demo cycles (default 10s) |
+| `PENDULUM_CONTROL_FREQ_HZ` | Control loop frequency, must match training (default 35.0) |
+| `PENDULUM_MAX_ACCEL_RAD_S2` | Action-to-acceleration scale, must match training (default 150.0) |

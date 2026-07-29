@@ -34,6 +34,18 @@ teacher's action. That dataset, not a hardware log, is what
 `distill.py`/`dagger_relabel.py` need to regenerate `student.pt` from
 scratch.
 
+`student_numpy.npz` is the same weights re-exported to plain NumPy by
+`export_weights_numpy.py` (bit-exact to `student.pt`, max diff ~9e-7 —
+float32 rounding noise) — nothing but `numpy_student.py` is needed to run
+it, so a caller (`tools/pi_demo/run_demo.py`) never has to import
+torch/stable-baselines3 at all. Regenerate it after retraining with:
+
+```bash
+python export_weights_numpy.py \
+    --student models/distill_working_balance_h32_dagger/student.pt \
+    --out models/distill_working_balance_h32_dagger/student_numpy.npz
+```
+
 This student is validated tethered only (`run_policy.py` doing inference on
 a PC or Raspberry Pi, talking to the Nano over serial as a dumb sensor/motor
 server) — not a standalone on-device deployment. `docs/quantisation.md`
