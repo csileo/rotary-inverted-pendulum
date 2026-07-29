@@ -8,8 +8,3 @@ stable-baselines3
 pyserial
 gymnasium
 mujoco
-# Only needed for train_sac.py --eval --record-video (offscreen MuJoCo
-# rendering saved straight to .mp4, no external screen recorder) — skip
-# these two if you only ever use the interactive viewer.
-imageio
-imageio-ffmpeg
