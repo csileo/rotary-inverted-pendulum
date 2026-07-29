@@ -94,7 +94,7 @@ def main() -> int:
         "PENDULUM_POLICY",
         str(RL_DIR / "models" / "distill_working_balance_h32_dagger" / "student_numpy.npz"))
     frame_stack = int(os.environ.get("PENDULUM_FRAME_STACK", "3"))
-    duration_s = os.environ.get("PENDULUM_DURATION_S", "60")
+    duration_s = os.environ.get("PENDULUM_DURATION_S", "30")
     motor_power_timeout_s = float(os.environ.get("PENDULUM_MOTOR_POWER_TIMEOUT_S", "120"))
     loop_delay_s = float(os.environ.get("PENDULUM_LOOP_DELAY_S", "10"))
     control_freq = float(os.environ.get("PENDULUM_CONTROL_FREQ_HZ", "35.0"))
