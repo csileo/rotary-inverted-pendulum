@@ -246,7 +246,7 @@ Optional environment variables (add under `[Service]` with
 |---|---|
 | `PENDULUM_POLICY` | Path to the `.zip`/`.pt`/`.npz` checkpoint to load. Defaults to `models/distill_working_balance_h32_dagger/student_numpy.npz` (no torch import at all); set to `models/policy_working_balance.zip` for the full SAC teacher instead |
 | `PENDULUM_FRAME_STACK` | Must match the checkpoint's training frame-stack |
-| `PENDULUM_DURATION_S` | How long to balance before stopping |
+| `PENDULUM_DURATION_S` | How long to balance before stopping (default 30s) |
 | `PENDULUM_MOTOR_POWER_TIMEOUT_S` | How long to wait for 12V before giving up |
 | `PENDULUM_LOOP_DELAY_S` | Pause between demo cycles (default 10s) |
 | `PENDULUM_CONTROL_FREQ_HZ` | Control loop frequency, must match training (default 35.0) |
